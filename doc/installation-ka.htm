@@ -1,0 +1,188 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+<TITLE>Ka-deploy installation</TITLE>
+<META NAME="generator" CONTENT="VIM 6.0">
+</HEAD>
+<BODY bgcolor=white>
+<P>
+This file describes the installation and use of Ka on a Linux cluster or a network of computers.
+<h1>Requisites </h1>
+<p>
+Ka allows the cloning of a &quot;source node&quot; to a &quot;destination node&quot; - or several destination 
+nodes -&nbsp; using information from a &quot;server node&quot; (nfs/tftp/dhcp).&nbsp; 
+<p>
+The source and the destination nodes should have the same hardware.
+
+Ka is made of several components:
+<ul>
+<li>a 'master' program that will be run on the source node
+<li>a 'client' program that will fetch the data from the 'master' and write them on the destination nodes. This client is located
+on a nfsroot system image (that will be mounted later by the destination nodes), and therefore must be installed on a NFS server.
+<li>a bunch of scripts/files used to manage the boot of the destination nodes, which must be installed on a TFTP server.
+</ul>
+
+<h1>Installation and use </h1>
+
+
+<p>Cloning a cluster with Ka is a four-step work. </p>
+<ol>
+  <li>Getting the rpm files</li>
+  <li>Installing the server node</li>
+  <li>Preparing the source node</li>
+  <li>Cloning</li>
+</ol>
+
+
+<h2> Getting the files </h2><p>Download the RPM's from the <a href=http://sourceforge.net/project/showfiles.php?group_id=26218>download page</a> on
+sourceforge.<br>
+ka-nfsroot and ka-server-host RPM's are to be installed on the server
+node.<br>
+ka-deploy-cluster-node must be installed on the source node.
+<p>
+ka-nfsroot only comes as a binary (It has been built from the mini distribution ttylinux (<a href=http://www.informatik.uni-bremen.de/~pharao90/ttylinux/>http://www.informatik.uni-bremen.de/~pharao90/ttylinux/</a>)).
+
+<h2>Installing the server node</h2>
+
+<h3>Installing Ka</h3>
+<p>Install ka-nfsroot and ka-server-host RPM's.</p>
+To easily configure ka, run the configuration scripts <tt>configure_server.sh</tt> and <tt>configure_nfsroot.sh</tt> (in /usr/share/Ka).<br>
+<p>
+Ka requires on your server:
+<ul>
+<li>a NFS server which exports /tftpboot/ka/nfsroot
+<li>a TFTP server (compatible with pxelinux, for instance tftp-hpa) which serves files from the directory /tftpboot
+</ul>
+<p>
+You can test your installation by running the <tt>test_services.sh</tt> script (in /usr/share/Ka).
+As a super-user, type <tt>test_services.sh</tt> <i>ip-of-your-tftp-server</i>
+
+<h3>DHCP</h3>
+Ka needs a working DHCP server to be present on your network. This server is required for proper boot with pxelinux. Dynamic leases are probably not a good idea here.
+Your dhcpd.conf must include a "next-server" statement giving the IP of your tftp server.
+The "filename" option in your dhcpd.conf must be "ka/pxelinux.0".
+
+<h2> Preparing the source node</h2>
+Install the ka-deploy-source-node rpm. There is no configuration required for this package.
+
+You can again test your installation by running the <tt>test_services.sh</tt> script (in /usr/share/Ka).
+As a super-user, type <tt>test_services.sh</tt> <i>ip-of-your-tftp-server</i>
+
+
+<h2>Cloning</h2>
+
+<h3>On the server</h3>
+The boot of the destination nodes uses PXE and PXELINUX, and does so by using a config file present on the tftp server.
+So you must indicate on the server which are the destination nodes that you want to install, so their next reboot will be in install mode. For this :
+<PRE>
+$ cd /tftpboot/ka/
+$ ./ka_pxe_step -s -t install -m machine1 -m machine2 -m machine3
+</PRE>
+./ka_pxe_step -h will give you a list of available options.
+
+<h3>On the source node</h3>
+Run (as super-user) the ka-d command on the source node:
+<PRE>
+ka-d.sh -n xx
+</PRE>
+where xx is the number of destination nodes.
+Run ka-d.sh -h to obtain the full list of options.
+Boot all destination nodes. When all the nodes have started, cloning starts.<BR>
+
+</p>
+
+<H1><A NAME="section-1.">Troubleshooting:</A></H1>
+
+<UL>
+<LI>On the client, tar prints : 
+tar : could not create directory : no such file or directory -&gt;This is normal, see BUGS
+
+<LI>On the client, tar prints lots and lots of error messages : -&gt;you probably have a wrong version of tar
+
+<LI>During the cloning, the client does not find the server and fails on 'udp-find-server()' : -&gt; your netmask may be wrong. check your dhcpd.conf, you must have specified
+the subnet. If you still have trouble with udp, try to get rid of the -s
+option on ka-d-client (edit /tftpboot/ka/nfsroot/install) and use the -h option
+(see <a href=Ka-deploy.html>Ka-deploy.txt</a> for help)
+
+<li>
+Default kernel in the /tftpboot directory on the server node is compatible with
+3-com and Intel Ethernet card. If you have another network card, you must build a linux kernel
+image for your machines that supports (without using modules):
+<ul>
+<li>your network interface card(s)
+<li>IP autoconfiguration(bootp/dhcp)
+<li>root filesystem on nfs
+</ul>
+
+
+<LI>Default cloning uses the source node partitionning scheme. This means that you will probably run into some weird errors if your nodes do not all have the same hard disk.
+To change this, use a 'description file' with the -p option of ka-d.sh
+
+<li>You must check that the destination nodes can boot on their LAN card using the PXE protocol
+
+
+<LI>
+You also need some software of the cluster node:
+<UL>
+<LI>GNU tar, and NOT version 1.13.19. Version 1.13.17 is OK, I don't know about
+the others. (issues with hard links in 1.13.19). -- older versions probably
+are NOT ok.
+
+<LI>
+tftp : tftp 0.16-2 is OK, tftp 0.17-4 is not (buggy tftp put).
+
+<LI>a properly configured lilo on the source node
+
+</UL>
+If you have trouble finding correct versions for tar and tftp, just take the
+ones from the nfsroot rpm.
+
+
+<li> IP configuration on the cloned nodes : the installation process will try to modify the configuration files of the newly installed systems to set a correct IP
+address and DNS name. This should work with Mandrake systems at least. If you have problems, edit /tftpboot/ka/nfsroot/ka/setup-network.sh
+
+</ul>
+During the cloning phase, you may check what is going on the server
+with a tail -f on
+/var/log/messages on the server. Information about the other nodes are printed
+on their screen. You may also see what's on the screen of the installing nodes by telneting them on port 233.
+
+
+<h1><a NAME="section-4.">TIPS FOR SETTING UP DHCPD</a></h1>
+
+A typical static lease to use would be like this :
+
+<pre>
+        host icluster1 
+        {
+                hardware ethernet 00:01:02:03:4c:d8;
+                fixed-address 129.88.96.1;
+                filename "ka/pxelinux.0";
+                next-server 129.88.96.252;
+        }
+</pre>
+
+With a dhcpd.conf beginning like this for example :
+
+<pre>
+option subnet-mask 255.255.255.0;
+option routers 129.88.96.254;
+subnet 129.88.96.0 netmask 255.255.255.0
+{
+group {
+        default-lease-time -1;
+
+</pre>
+ (add leases here)
+<pre>
+	}
+}
+</pre>
+
+If you want to create static hosts configuration for a lot of machines, you need their MAC address. You can do it by hand. You can also boot them with a dynamic host configuration, and
+then take the addresses on the leases file or on the log files. There is a PERL script in the scripts directory that does that (recup_addresses_mac.pl). But you must be careful and switch the machines on in the good order. 
+
+
+
+</BODY>
+</HTML>

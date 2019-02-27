@@ -1,0 +1,10 @@
+See Ka-deploy.txt and boot.txt in the doc directory.
+
+There is no special configure script in the src directory. To compile, only type 'make' in the src directory.
+
+If you want to use the multicast support :
+
+1 - First compile rmtplib using ./configure && make && make install in rmtplib's directory then
+compile with 'make' in the src directory. (make sure LD_LIBRARY_PATH contains your /usr/local/lib or /etc/ld.so.conf)
+
+2 - edit ka-deploy/src/Makefile and replace 'MCAST = no' by 'MCAST = yes', and run make (make clean if you already have compiled once)

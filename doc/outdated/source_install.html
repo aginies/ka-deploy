@@ -1,0 +1,35 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 3.2 Final//EN">
+<HTML>
+<HEAD>
+<TITLE>Ka=deploy installation</TITLE>
+<META NAME="generator" CONTENT="VIM 6.0">
+</HEAD>
+<BODY bgcolor=white>
+<P>
+
+<h2> Installing files </h2><br>
+<p>
+If you took the source and compiled it :
+<ul>
+<li>ka-nfsroot should go in /tftpboot/NFSROOT
+<li>from ka-boot : kaboot -&gt; /tftpboot
+<li>from ka-deploy : here is what is done by the RPM installation, you should do the same:
+</UL>
+<PRE>
+        mkdir -p /tftpboot/NFSROOT
+        mkdir -p /tftpboot/kascripts
+        mkdir -p /tftpboot/kasteps
+        mkdir -p /etc/ka
+</PRE>
+
+
+<PRE>
+        install -m 755 src/ka-d-client /tftpboot/NFSROOT/ka-d-client
+        install -m 755 scripts/ka_range_set /tftpboot/ka_range_set
+        install -m 755 scripts/ka_range_step /tftpboot/ka_range_step
+        install -m 644 scripts/ka_deploy.kbt /tftpboot/ka_deploy.kbt
+        install -m 644 scripts/ka.conf /etc/ka/ka.conf
+        install -m 644 scripts/ka.funcs /etc/ka/ka.funcs
+</PRE>
+</BODY>
+</HTML>

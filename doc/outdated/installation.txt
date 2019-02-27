@@ -1,0 +1,139 @@
+This file only describes the steps for he installation of Ka.
+Other questions might be answered in Ka-deploy.txt and boot.txt
+
+*- Be sure to get the following files (version number can differ):
+ka-boot-0.5-1.i686.rpm  
+ka-deploy-cluster-node-0.59-1.i686.rpm  
+ka-deploy-server-host-0.59-1.i686.rpm  
+ka-nfsroot-0.59-1.i686.rpm
+
+If you don't want rpms, take the .tar.gz for ka-boot and ka-deploy and compile
+them ( on a linux machine ! ). ka-nfsroot only comes as a binary.
+ka-nfsroot comes from the mini distribution Mininux (http://mininux.free.fr). 
+
+*- You need for your cluster a machine that will act as DHCP and TFTP server. Install these services (dhcp and tftp) and then install ka-boot, ka-nfsroot, and ka-deploy-server-host on this machine ("the server").
+If you took the RPM's, just rpm -ivh them.
+If you took the source and compiled it :
+-ka-nfsroot should go in /tftpboot/NFSROOT
+-from ka-boot : kaboot -> /tftpboot
+-from ka-deploy : 
+this is what is done by the RPM installation, you should do the same
+
+	mkdir -p /tftpboot/NFSROOT
+	mkdir -p /tftpboot/kascripts
+	mkdir -p /tftpboot/kasteps
+	mkdir -p /etc/ka
+
+
+	install -m 755 src/ka-d-client /tftpboot/NFSROOT/ka-d-client
+	install -m 755 scripts/ka_range_set /tftpboot/ka_range_set
+	install -m 755 scripts/ka_range_step /tftpboot/ka_range_step
+	install -m 644 scripts/ka_deploy.kbt /tftpboot/ka_deploy.kbt
+	install -m 644 scripts/ka.conf /etc/ka/ka.conf
+	install -m 644 scripts/ka.funcs /etc/ka/ka.funcs
+
+
+
+*- You must have a cluster node, that will be cloned on all the machines of the cluster. On this machine ("the node"), install ka-deploy-cluster-node. This node should be a Linux system set up to use DHCP for the IP configuration.
+without  the rpm :
+	-> on the cluster node, put ka-postinstall in /etc/init.d and make sure it gets executed at machine startup after newtork initialization : ln -sf ../init.d/ka-postinstall /etc/rc.d/rc"$runlevel".d/S13ka-postinstall
+	-> ka-d-server should go in /usr/local/bin or whatever you like.
+	
+*- On the cluster node: edit /etc/init.d/ka-postintall
+There is a line server=
+Just put there the name of your tftp server : for instance :
+server=myserver.mydomain.com
+
+The cluster node MUST be configured to use dhcp to get its IP configuration.
+
+You also need some software of the cluster node:
+-GNU tar, and NOT version 1.13.19. Version 1.13.17 is OK, I don't know about
+the others. (issues with hard links in 1.13.19). -- older versions probably
+are NOT ok.
+
+-tftp : tftp 0.16-2 is OK, tftp 0.17-4 is not (buggy tftp put).
+
+-a properly configured lilo
+
+If you have trouble finding correct versions for tar and tftp, just take the
+ones from the nfsroot rpm.
+
+*- On the server : Edit /etc/ka/ka.conf to match your cluster configuration. Once this is
+done:
+$ cd /tftpboot
+$ ./ka_range_set 1 50 ka_deploy.kbt
+this will set up links so that all the machines from 1 to 50 have ka-boot
+running the ka_deploy.kbt script on startup.
+
+$ ./ka_range_step 2 50 install
+(of course the numbers 2, 50 are only examples. Let's imagine you have a
+50-node cluster and node 1 will be cloned on all other nodes)
+$./ka_range_step 1 1 ready
+
+These two commands will write files so that on its next reboot, node 1 will
+just boot normally on its hard drive, and on their next reboot 
+nodes 2 to 50 will do a network boot and run the installation program.
+
+On the /tftpboot directory on the server you must also place a linux kernel
+image for your machines that supports (without using modules)
+-your network interface card(s)
+-IP autoconfiguration(bootp/dhcp)
+-root filesystem on nfs
+
+Edit the ka_deploy.kbt script to match the filename of this kernel
+
+*- Setting up dhcp/discovering MAC addresses :
+First you must verify that your machines boot on their LAN card using the PXE
+protocol. (this section needs to be written)
+
+
+
+
+*- Now you must edit the /tftpboot/NFSROOT/install and part files to fit to
+your partition scheme. We use only one / partition on /dev/hda1, and one swap
+on /dev/hda2. In any other case, you must edit these files. 
+If your Linux nodes have more than one Linux partition (eg you have a /, a
+/usr, etc.. and not only a /) you need to read the Ka-deploy.txt documentation and
+use a different command for the server than the default one.
+
+Else just run ka-d-server as root on the node 1:
+root@node1$ ka-d-server -s icluster -n 49
+
+	-s icluster : the session name of this installation is 'icluster' : must
+	match the name that is in the scripts in /tftpboot/NFSROOT on the server
+	-n 49 : we install 49 nodes 
+
+And boot the 49 nodes that must be installed. And that's it. Do a tail -f on
+/var/log/messages on the server, watch the screen of the node 1 and one of the
+other nodes to check what's going on.
+
+The file /tftpboot/NFSROOT/tftpserver should also contain the IP address of
+your tftp server.
+
+
+
+
+Troubleshooting:
+----------------
+
+* On the client, tar prints : 
+tar : could not create directory : no such file or directory
+->This is normal, see BUGS
+
+* On the client, tar prints lots and lots of error messages :
+->you probably have a wrong version of tar
+
+* During the second boot, ka-postinstall writes :
+'PB de tftp'
+-> you propably have a buggy version of tftp. If not, check the file tree in
+/tftpboot, the rights on the kaspteps/ files (they must be world-writable),
+and see in the logs of your tftp server
+
+* During the first boot, the client does not find the server and fails on
+'udp-find-server()' :
+-> your netmask may be wrong. check your dhcpd.conf, you must have specified
+the subnet. If you still have trouble with udp, try to get rid of the -s
+option on ka-d-client (edit /tftpboot/NFSROOT/install) and use the -h option
+(see Ka-deploy.txt for help)
+
+

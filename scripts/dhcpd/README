@@ -1,0 +1,17 @@
+This directory contains a mini dhcp server very easy to setup and a tool to create a ISC-dhcpd config file.
+The purpose of this server is to facilitate the discovery of the MAC addresses on your network.
+The server might not work for you, as it is not fully compliant with the dhcp RFCs. (But it might as well, it works for me :))
+To setup the server :
+-edit /etc/ka/ka.conf file and adjust the parameters to match your network settings
+-create a file with the list of IP addresses (one per line) that you want to give to your nodes. this file should be named 'data' and in the current directory. 
+You can use the mkiplist script to create the file if you have a large set of contiguous IP addresses.
+
+Then (as root) run dhcpd.pl, and boot your nodes.
+The server will answer all dhcpd requests it receives, and create a list of IP/mac address pairs, that will be written to the data file.
+(Make sure nobody but you sends dhcp requests during that time)
+
+When installation of the cluster is over, run create_dhcpd_conf.pl to create a config file for the real dhcpd server (ISC dhcpd).
+
+This mini server is functional but lacks compliance, stability, efficiency, etc, that's why I wrote create_dhcpd_conf.pl.
+
+As far as I can remember, I wrote this server because the ISC/Linux 2.4 pair cannot use dynamic DHCP correctly (maybe it has been fixed).

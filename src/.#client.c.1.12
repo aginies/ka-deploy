@@ -1,0 +1,1100 @@
+
+
+/*
+ * $Revision: 1.12 $
+ * $Author: sderr $
+ * $Date: 2001/07/02 11:39:13 $
+ * $Header: /cvsroot/ka-tools/ka-deploy/src/client.c,v 1.12 2001/07/02 11:39:13 sderr Exp $
+ * $Id: client.c,v 1.12 2001/07/02 11:39:13 sderr Exp $
+ * $Log: client.c,v $
+ * Revision 1.12  2001/07/02 11:39:13  sderr
+ * Moved things so that:
+ * 	-multicast support is optional (check Makefile)
+ * 	-.c files again can be compiled using gcc, not g++ (added multicast_server.cpp and multicast_client.cpp)
+ * Cleaned transport_mode variable
+ *
+ * Revision 1.11  2001/07/01 15:27:18  mikmak
+ * multicast is now integrated and working. Many updates to rmtplib and optimization for Ka.Still much to do ...
+ *
+ * Revision 1.10  2001/06/29 09:31:45  sderr
+ * *** empty log message ***
+ *
+ * Revision 1.9  2001/06/05 08:51:57  sderr
+ * Added [ -e command ] command line option
+ *
+ * Revision 1.8  2001/05/30 15:00:08  sderr
+ * Client now checks udp reply against version string
+ *
+ * Revision 1.7  2001/05/30 14:35:51  sderr
+ * Added udp support, clients now can find the server by sending UDP broadcasts
+ *
+ * Revision 1.6  2001/05/30 13:35:08  sderr
+ * Added getopt use for command-line parsing
+ *
+ * Revision 1.5  2001/05/21 10:03:02  sderr
+ * Re-added support for operation without a data buffer. Hope I broke nothing. Seems OK.
+ *
+ * Revision 1.4  2001/05/10 12:57:51  sderr
+ * Removed assert() when trying to connect, put a perror() instead
+ *
+ * Revision 1.3  2001/05/10 12:18:02  sderr
+ * Added comments, fixed open comment on CVS header
+ * Function renaming in client
+ *
+ * Revision 1.2  2001/05/03 12:34:41  sderr
+ * Added CVS Keywords to most files. Mostly useless.
+ *
+ * $State: Exp $
+ */
+
+
+#include "packet.h"
+#include "udp.h"
+#include "netdb.h"
+#include <assert.h>
+#include <errno.h>
+#include "tree.h"
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <stdio.h>
+#include <malloc.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <string.h>
+#include <stdlib.h>
+
+
+static char version[] = SOFT_VERSION;
+
+
+//#define VERY_SMALL_BUFFER
+
+#define USE_DATA_BUFFER
+
+//#define EXTCOMMAND "sed s/bytes/mein/g"
+//#define EXTCOMMAND "tr i X"
+//#define EXTCOMMAND "wc"
+//#define EXTCOMMAND "cat"
+//#define EXTCOMMAND "cat |cat |cat |cat |cat |cat |cat |cat |cat |cat |cat |cat | tr A B | wc"
+//#define EXTCOMMAND "(cd /tmp/disk; tar tfvB -)"
+
+//#define EXTCOMMAND "(cd /tmp/disk; tar --exclude / -xfvpB  -)"
+#define EXTCOMMAND "(cd /tmp/disk; tar --extract  --read-full-records --same-permissions --numeric-owner --sparse --file - )"
+
+
+//#define SERVER "icluster17"
+//#define SERVER "ute3"
+//#define SERVER "129.88.69.201"
+
+int wait_others = 0;
+
+char * ext_command = EXTCOMMAND;
+
+int socket_command = -1; // connected to the server
+int socket_server = -1; // for incoming connections
+int socket_data = -1; // for incoming data
+
+int fd_max;
+int flow_ended = 0;
+fd_set sockset;
+fd_set sockset_write;
+
+struct child
+{
+	int exists;
+	int fd;
+};
+
+struct child children[ARITE_MAX];
+int nb_children = 0;
+#define MAX_CONN (ARITE_MAX+10)
+
+void start_external_command();
+int pipe_read = -1;
+int pipe_write = -1;
+
+
+int max(int a, int b) { return a > b ? a : b; }
+int min(int a, int b) { return a < b ? a : b; }
+
+
+
+/*
+ * Notes about 'the data buffer'
+ * When a client receives data, ie will put them is his data buffer.
+ * Then 2 or more different consumers will want those data :
+ * - the external command
+ * - the network connection(s) to the child(ren)
+ *
+ * This buffer is a circular buffer. 
+ * We will accept data from the network only when this buffer is not full, 
+ * and we wait for it to hold a certain amount of data to send it.
+ * The goal of this buffer is to be able to send the data through the network even if we have not yet written it to the disk.
+ * But in fact since Linux has its own buffer (disk cache) the effect is almost void...
+ * Anyway, this buffer may help in the future If we want to try to do some error recovery.
+ */
+
+/* stuff for the buffer */
+#ifdef VERY_SMALL_BUFFER
+
+// debug buffer here !
+#define DATA_BUFFER_SIZE (100)
+#define WANT_FREE_SPACE 10
+#define SIZE_TO_SEND 60
+#define SIZE_WHEN_SEND 50
+// buffer for reading : 
+#define BUFFERSIZE 9
+#else
+
+// real buffer size:
+#define DATA_BUFFER_SIZE (( 1 << 20 ) * 5 )
+#define WANT_FREE_SPACE 100000
+#define SIZE_TO_SEND 50000
+#define SIZE_WHEN_SEND 32768
+#define BUFFERSIZE 32768
+#endif
+
+
+
+/* the buffer which will hold the data before we store them in the 'data buffer' */
+static char read_buffer[BUFFERSIZE];
+
+int process_packet(struct server_packet * packet);
+
+#ifdef USE_DATA_BUFFER
+/** the buffer himself */
+char * data_buffer;
+
+/** the end of the data in the buffer */
+int data_buffer_end;
+
+/** the offset of the data (i.e. where to begin next read in the buffer) for each consumer. 
+ * The index of this array is the file descriptor : socket for network, pipe for the external command
+ * data_buffer_pos[i] equals -1 means that i is not a registered consumer
+ */
+int data_buffer_pos[MAX_CONN];
+
+#ifdef USE_RMTP_LIB
+/* Multicast address */
+IP mcast;
+
+/* from multicast_server.cpp : */
+extern  void multicast_main_loop();
+
+#endif
+enum { TCP_TREE_TRANS, MULTICAST_TRANS } transport_modes;
+
+/* Transport mode */
+int transport_mode = TCP_TREE_TRANS; 
+
+
+/** Initialiaze the data buffer for fildes fd */
+void init_data_buffer_for(int fd)
+{
+	data_buffer_pos[fd] = 0;
+}
+
+/** Return the amount of data available for filedes z in the data buffer */
+int data_in_data_buffer_for(int z)
+{
+	int f;
+	
+	if (data_buffer_pos[z] == -1)
+		return 0;
+		
+	f =  data_buffer_end - data_buffer_pos[z];
+	/* wrap around the end of the buffer if necessary */
+	f = (f >= 0) ? f : f + DATA_BUFFER_SIZE;
+	
+/*	printf("For client %d, pos = %d, end = %d, size = %d\n", z, data_buffer_pos[z], data_buffer_end, f); */
+	
+	return f;
+}
+
+/** Return the free space in the data buffer */
+int space_left_in_data_buffer()
+{
+	int z;
+	int f;
+	int cmax = 0;
+	for (z=0; z < MAX_CONN;z++)
+		if (data_buffer_pos[z] != -1)
+		{
+			cmax = max (cmax, data_in_data_buffer_for(z));
+		}
+	
+	return DATA_BUFFER_SIZE - cmax;
+}
+
+/** Add data into the data buffer 
+  * There MUST be enough free space (not checked) 
+  */
+  
+void store_in_data_buffer(char * what, int size)
+{
+	int chunk1, chunk2;
+	
+/*	printf("Storing %d bytes in the buffer\n", size); */
+
+	/** we check if we have to wrap around, when meeting the end of the physical buffer */
+	chunk1 = min (size, DATA_BUFFER_SIZE - data_buffer_end);
+	chunk2 = max (size - chunk1, 0);
+
+	memcpy(data_buffer + data_buffer_end, what, chunk1);
+	if (chunk2) memcpy(data_buffer, what + chunk1, chunk2);
+	
+	data_buffer_end += size;
+	data_buffer_end = (data_buffer_end >= DATA_BUFFER_SIZE) ? data_buffer_end - DATA_BUFFER_SIZE : data_buffer_end ;
+}
+
+/** For filedes fd, take _size_ data in the buffer, and write() them to fd */
+int send_from_data_buffer(int fd, int size)
+{
+	int chunk1, chunk2;
+	int pos = data_buffer_pos[fd];
+	
+/*	printf("Sending %d bytes from the buffer to %d\n", size, fd);	*/
+
+	/* we check if we have to wrap around, when meeting the end of the physical buffer */
+	size = min (size, data_in_data_buffer_for(fd));
+	chunk1 = min (size, DATA_BUFFER_SIZE - pos);
+	chunk2 = max (size - chunk1, 0);
+
+	write(fd, data_buffer + pos, chunk1);
+	if (chunk2) write(fd, data_buffer, chunk2);
+	
+	pos += chunk1 + chunk2;
+	pos = (pos >= DATA_BUFFER_SIZE) ? pos - DATA_BUFFER_SIZE : pos ;
+	
+	data_buffer_pos[fd] = pos;
+	
+	return (chunk1 + chunk2);
+}
+
+#endif /* USE_DATA_BUFFER */
+
+
+int send_packet_server(struct client_packet * packet)
+{
+	return write(socket_command, packet, sizeof(struct client_packet));
+}
+
+int say_hello()
+{
+	struct client_packet packet;
+	struct packet_client_says_hello * pdata;
+	
+	packet.type = client_says_hello;
+	pdata = (struct packet_client_says_hello *) &(packet.data);
+	
+	strcpy(pdata->version, version);
+	
+	return send_packet_server(&packet);	
+}
+
+int say_go_now()
+{
+	struct client_packet packet;
+	struct packet_client_says_go_now * pdata;
+	
+	packet.type = client_says_go_now;
+	pdata = (struct packet_client_says_go_now *) &(packet.data);
+	
+	return send_packet_server(&packet);	
+}
+
+int say_has_finished()
+{
+	struct client_packet packet;
+	struct packet_client_says_has_finished * pdata;
+	
+	packet.type = client_says_has_finished;
+	pdata = (struct packet_client_says_has_finished *) &(packet.data);
+	
+	return send_packet_server(&packet);	
+}
+
+int say_accept_data()
+{
+	struct client_packet packet;
+	struct packet_client_accepts_data * pdata;
+	
+	packet.type = client_accepts_data;
+	pdata = (struct packet_client_accepts_data *) &(packet.data);
+	
+	return send_packet_server(&packet);	
+}
+
+
+int say_i_got_a_client(IP ip)
+{
+	struct client_packet packet;
+	struct packet_client_got_client * pdata;
+	
+	packet.type = client_got_client;
+	pdata = &(packet.data.got_client);
+	
+	pdata->child_ip = ip;
+	
+	return send_packet_server(&packet);	
+}
+
+
+int get_ip_of(char * hostname, IP * ip)
+{
+	struct hostent * he;
+	
+	he = gethostbyname(hostname);
+	if (he == NULL) return -1;
+	assert(sizeof(IP) == he->h_length);
+	memcpy((char *) ip, he->h_addr, he->h_length);
+	return 0;
+}
+
+
+int call_port(IP ip, unsigned short port)
+{
+	struct sockaddr_in sa;
+	int e;
+	int sock;
+
+
+	memset(&sa, 0, sizeof(struct sockaddr_in));
+
+	sa.sin_addr = ip;
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(port); 
+
+	sock = socket(AF_INET, SOCK_STREAM, 0);
+	if (sock < 0) return -1;
+
+	e = connect(sock, (struct sockaddr *) &sa, sizeof(struct sockaddr_in));
+	if (e < 0) 
+	{
+		close(sock);
+		return -1;
+	}
+
+	printf("Socket %d connected to port %d on %s.\n", sock, port, inet_ntoa(ip));
+
+	return sock;
+}
+
+int close_connection(int fd)
+{
+	close(fd);
+	FD_CLR(fd, &sockset);		
+	return -1;
+}
+
+/** Read a packet on a control connection */
+int read_packet_from_socket(int socket)
+{
+	struct server_packet packet;
+	int n;
+	
+	printf("Reading control packet from socket %d\n", socket); 
+	n = read(socket, (void *) &packet, sizeof(struct server_packet));
+	printf("%d bytes\n", n); 
+	/* don't bother, my packets are small and should be read in exactly one try */
+	if (n!= sizeof(struct server_packet))
+	{
+		if (n>0) warn("Wrong packet size on socket %d\n", socket);
+		if (n==0) warn("Peer closed connection on socket %d\n", socket);
+		if (n<0) warn("Error on socket %d : %s\n", socket, strerror(errno));
+		close_connection(socket);
+		return -1;
+	}
+		
+	return process_packet(&packet);
+}
+
+/** Accept a child = a new outgoing data connection */
+void accept_new_child()
+{
+	struct sockaddr_in client_addr;
+	socklen_t client_addr_size;
+	struct hostent * heclient;
+	int socket_client;
+	struct child * son;
+	IP ip;
+
+	memset(&client_addr,0, sizeof(client_addr));
+	client_addr_size = sizeof(client_addr);
+	socket_client = accept(socket_server, (struct sockaddr *) &client_addr, &client_addr_size);
+	ip = client_addr.sin_addr;
+	
+	printf("Accepting connection from %s\n", inet_ntoa(ip));
+	
+	if (socket_client >= MAX_CONN)
+	{
+		warn("uh, oh, connection with fd = %d\n", socket_client);
+		close(socket_client);
+		return;
+	}
+	
+	if (nb_children == ARITE_MAX)
+	{
+		warn("Hey, I already have %d children!\n", nb_children);
+		close(socket_client);
+		return;
+	}
+		
+	
+	if (socket_client > fd_max) fd_max = socket_client;
+
+	printf("Welcome son, you are number %d (MAX %d)\n", nb_children, ARITE_MAX);
+	
+	FD_SET(socket_client, &sockset);	
+	son = &children[nb_children++];
+	son->exists = 1;
+	son->fd = socket_client;
+#ifdef USE_DATA_BUFFER	
+	init_data_buffer_for(socket_client);
+#endif
+	
+	say_i_got_a_client(ip);
+	
+
+}
+
+
+int process_server_says_go(struct packet_server_says_go * p)
+{
+	printf("Server says go\n");
+	return 0;
+}
+
+
+int process_server_says_finish(struct packet_server_says_finish * p)
+{
+	printf("Other clients have finished, exiting...\n");
+	wait_others = 0;
+}
+
+/** The server gives the IP of our 'daddy' */
+int process_server_gives_ip(struct packet_server_gives_ip * p)
+{
+	printf("Server gives IP : %s\n", inet_ntoa(p->ip));
+	
+	/* call daddy : open data connection with him */
+	socket_data = call_port(p->ip, PORTNUMDATA);
+	assert(socket_data >= 0);
+	FD_SET(socket_data, &sockset);
+	fd_max = max(socket_data, fd_max);		
+	
+	/* start command */
+	start_external_command();
+	
+	return 0;
+}
+
+/** Process a control packet that has been received and read */
+int process_packet(struct server_packet * packet)
+{
+	switch(packet->type)
+	{
+		case server_says_go:
+			return process_server_says_go((struct packet_server_says_go *) &(packet->data));
+		case server_says_finish:
+			return process_server_says_finish((struct packet_server_says_finish *) &(packet->data));
+		case server_gives_ip:
+			return process_server_gives_ip((struct packet_server_gives_ip *) &(packet->data));
+			
+	}
+	printf("Server sent an unknown command\n");
+	return -1;
+}
+
+/** A few vars to know the througput */
+unsigned long long totaldata = 0;
+unsigned long long lasttotal = 0;
+unsigned int datapackets = 0;
+struct timeval data_time;
+struct timeval last_time;
+
+/** We have read data on the data connection, do something with it */
+void process_data(char * what, int size)
+{
+	struct timeval now;
+	int usec;
+	float sec;
+	float rate;
+	int i;
+	
+/*	printf("Got data :%d\n", size); */
+/* 	write(1, what, size);*/
+	
+	if (datapackets == 0) /* first data arrival, start clock */
+	{
+		gettimeofday(&data_time, 0);
+		memcpy(&last_time, &data_time, sizeof(struct timeval));
+	}
+	
+#ifdef USE_DATA_BUFFER
+
+	/* put data in the buffer - they will be sent later - after the next select() - maybe very soon, */	
+	store_in_data_buffer(what, size);
+	
+#else /* ! USE_DATA_BUFFER */
+
+	/* send data to network children */
+	for (i=0; i < ARITE_MAX;i++) 
+		if (children[i].exists)
+			write(children[i].fd, read_buffer, size);
+	
+	/* send data to local child */
+	if (pipe_write != -1) write(pipe_write, what, size);
+	
+#endif /* ! USE_DATA_BUFFER */
+
+	
+	
+	totaldata += size;
+	if ((++datapackets & 0x3ff) == 0) /* for each 256 packets, print status */
+	{
+		int z;
+		gettimeofday(&now, 0);		
+		usec = now.tv_sec - last_time.tv_sec;
+		usec = (usec * 1000000) + (now.tv_usec - last_time.tv_usec);
+
+		sec = ((float) usec) / 1000000.;
+		
+		rate =  ((float) (totaldata - lasttotal)) / sec;
+		
+		printf("\rTotal data received = %d Megs (%.3f Mbytes/sec); BUF :", (int) (totaldata >> 20), rate/ (1024. * 1024.));
+#ifdef USE_DATA_BUFFER
+		for (z=0; z < MAX_CONN;z++)
+		if (data_buffer_pos[z] != -1)
+		{
+			printf("%dM ", data_in_data_buffer_for(z) >> 20);
+		}
+#else
+		printf("(none)");
+#endif
+		fflush(stdout);
+		memcpy(&last_time, &now, sizeof(struct timeval));
+		lasttotal = totaldata;
+	}
+}
+
+
+/** End of data flow detected, do what must be done */
+void process_end_of_data()
+{
+	struct timeval now;
+	int usec;
+	float sec;
+	float rate;
+	int z;
+	
+	/* flush the data buffer.
+	 * network clients before local client 
+	 * Theses lines are inefficient if we have many clients and a big buffer. 
+	 * But hell, I usually have ONE client.
+	 */
+	 
+#ifdef USE_DATA_BUFFER	
+
+	for (z=0; z < MAX_CONN;z++)
+	if ((data_buffer_pos[z] != -1) && (pipe_write != z))
+	{
+		
+		while(data_in_data_buffer_for(z))
+			send_from_data_buffer(z, SIZE_WHEN_SEND);
+			
+		close(z);			
+	}
+	
+	z = pipe_write;
+	if (data_buffer_pos[z] != -1)
+	{
+		while(data_in_data_buffer_for(z))
+			send_from_data_buffer(z, SIZE_WHEN_SEND);
+				
+		close(z);
+	}
+
+#else
+	for (z=0; z < ARITE_MAX;z++) 
+		if (children[z].exists)
+		{
+			close(children[z].fd);
+			children[z].exists = 0;
+		}
+			
+	close(pipe_write);
+	pipe_write = -1;
+#endif
+	
+	gettimeofday(&now, 0);
+	printf("Total data received = %d Megs, in %d packets\n", (int) (totaldata >> 20), datapackets);	
+	
+	usec = now.tv_sec - data_time.tv_sec;
+	usec = (usec * 1000000) + (now.tv_usec - data_time.tv_usec);
+	
+	sec = ((float) usec) / 1000000.;
+	rate =  ((float) totaldata) / sec;
+	printf("Elapsed time = %.3f seconds, throughput = %.3f Mbytes/second\n", sec, rate/ (1024. * 1024.));
+}
+	
+
+/** read incoming data, and call process_data() to store them in the 'data buffer' */
+void take_incoming_data()
+{
+	int n;
+	int i;
+	n = read(socket_data, read_buffer, BUFFERSIZE);
+	
+	assert(n>=0); 
+	
+	/* read() returns 0 means no more data */
+	if (n == 0)
+	{
+		printf("End of data flow\n");
+		printf("Flushing buffers\n");
+		process_end_of_data();
+
+		flow_ended = 1;
+		say_has_finished();
+	}
+	
+	process_data(read_buffer, n);
+}
+			
+	
+/** the main loop : block on select() and then read/write data to/from file descriptors */
+void tcp_tree_main_loop()
+{
+	int i;
+	int free_space;
+	fd_set fdsr;
+	
+	while((!flow_ended) || (wait_others))
+	{
+		
+		
+		memcpy((char *) &fdsr, (char *) &sockset, sizeof(fd_set));		
+#ifdef USE_DATA_BUFFER	
+		FD_ZERO(&sockset_write);
+		
+
+		
+		free_space = space_left_in_data_buffer();	
+
+		/* if the data buffer gets full, don't accept data */
+		if (socket_data >= 0)
+			if (free_space < WANT_FREE_SPACE) 
+				FD_CLR( socket_data, &fdsr );
+				
+		/* see who are the child / pipes who can accept data */
+		for (i=0; i < MAX_CONN; i++)
+		{
+			if (data_in_data_buffer_for(i) > SIZE_TO_SEND)
+			{
+				FD_SET(i, &sockset_write);
+				//printf("I'm ok to send data to %d\n", i);
+			}
+		}	
+		
+
+
+		select(fd_max + 1, &fdsr, &sockset_write, NULL, NULL);
+#else
+		select(fd_max + 1, &fdsr, NULL, NULL, NULL);
+#endif
+		
+		if (socket_command >= 0)
+		if (FD_ISSET(socket_command, &fdsr))
+		{
+			int e = read_packet_from_socket(socket_command);
+			assert( e >= 0);		
+			continue;
+		}
+		
+		
+
+		if (socket_server >= 0)		
+		if (FD_ISSET(socket_server, &fdsr))
+		{
+			accept_new_child();
+		}
+
+		if (!flow_ended)						
+		if (socket_data >= 0)
+		if (FD_ISSET(socket_data, &fdsr))
+		{
+			take_incoming_data();
+		}
+		
+#ifdef USE_DATA_BUFFER			
+		for (i=0; i < MAX_CONN; i++)
+		{
+			if (FD_ISSET(i, &sockset_write))
+				send_from_data_buffer(i, SIZE_WHEN_SEND);
+		}
+#endif		
+		
+	}
+}
+
+
+/** open a socket to listen on a TCP port */
+int listen_port(unsigned short port)
+{
+	struct sockaddr_in sa;
+	struct hostent * he;
+
+	int sock;
+	int e;
+	int flag = 1;
+
+	memset(&sa, 0, sizeof(struct sockaddr_in));
+
+	sa.sin_family = AF_INET;
+	sa.sin_port = htons(port); 
+
+
+	sock = socket(AF_INET, SOCK_STREAM, 0);
+	if (sock < 0) return -1;
+	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+	
+
+	e = bind(sock, (struct sockaddr *) &sa, sizeof(struct sockaddr_in));
+	if (e < 0) 
+	{
+		close(sock);
+		perror("bind");
+		return -1;
+	}
+
+	listen(sock, 200); 
+
+	printf("Socket %d on port %d ready.\n", sock, port);
+
+	return sock;
+}
+
+
+/** Start the external command, its stdin being a pipe whose entry will be filedes 'pipe_write' */
+void start_external_command()
+{
+	int pip[2];
+	
+
+	printf("Let's go!\n");
+	
+	assert(pipe(pip) >= 0);
+	
+	
+	pipe_read = pip[0];
+	pipe_write = pip[1];
+	
+	
+	fd_max = max(pipe_read, fd_max);
+	fd_max = max(pipe_write, fd_max);
+	
+	if (fork())
+	{
+		/* father process */
+		close(pipe_read);
+#ifdef USE_DATA_BUFFER
+		init_data_buffer_for(pipe_write);
+#endif
+	}
+	else
+	{
+		/* child process */
+		int i;
+		close(0);
+		for (i=3; i <= fd_max; i++)
+			if ((i!=pipe_read)) close(i); 
+		
+		assert(dup2(pipe_read, 0) >=0); /* duplicate fd to stdin */
+		
+		/* I use system rather than execv so I don't care about parameters parsing, PATH issues, etc. */
+		exit(system(ext_command));
+	}
+}
+
+
+int check_udp_reply(char * packet, int packet_len)
+{
+	char * ref = version;
+	/*avoid buffer overflow */
+
+	packet[packet_len - 1] = '\0'; 
+
+	if (strlen(ref) + 1 != packet_len)
+		return 0; /* false */
+
+	if (strncmp(ref, packet, packet_len))
+		return 0; /* false */
+		
+	printf("Version name matches\n");
+	return 1;
+}
+
+
+int udp_find_server(char * session, IP * res_ip)
+{
+	struct hostent *he;
+	int on=1;
+	int sock_listen;
+	int retries = 10;
+	struct timeval tv;
+
+	int fd_max;
+	fd_set sockset;
+	
+	int addr_len;
+	char udppacket[UDP_MAX_PACKET_LEN];
+
+	addr_len = sizeof(struct sockaddr);
+
+
+	if ((he=gethostbyname("255.255.255.255")) == NULL) 
+	{  /* get the broadcast address */
+		perror("gethostbyname");
+		exit(1);
+	}
+
+	FD_ZERO(&sockset);
+	sock_listen = udp_listen(UDP_PORT_REPLY);
+	FD_SET(sock_listen, &sockset);
+
+	udp_send(*((struct in_addr *)he->h_addr), UDP_PORT_REQUEST, session, strlen(session) + 1);
+	
+	tv.tv_usec = 0;
+	tv.tv_sec = 1;
+
+	while (retries)
+	{
+		fd_set read_set;
+		memcpy(&read_set, &sockset, sizeof(fd_set));
+		
+		if (select(sock_listen + 1, &read_set, 0, 0, &tv) > 0)
+		{
+			IP ip;
+			int n;
+			/* something happened */
+			n = receive_udp_packet(sock_listen, udppacket, UDP_MAX_PACKET_LEN, &ip);
+			if (n > 0)
+			{
+				printf("got packet from %s\n",inet_ntoa(ip));
+				printf("packet is %d bytes long\n",n);
+				if (check_udp_reply(udppacket, n))
+				{
+					close(sock_listen);
+					*res_ip = ip;
+					return 0;
+				}
+				else
+					printf("Wrong server version\n");
+				
+			}
+
+		}
+		else
+		{
+			printf("Retrying...\n");
+			udp_send(*((struct in_addr *)he->h_addr), UDP_PORT_REQUEST, session, strlen(session) + 1);
+			retries--;
+			tv.tv_usec = 0;
+			tv.tv_sec = 1;
+
+		}
+	}
+
+	return -1;
+
+}
+
+
+void usage()
+{
+	printf("usage:ka-d-client [ -g ] [ -w ] [ -h host_name ] [ -s session_name ] [ -e command ] [ -m multicast adress ]\n");
+}
+
+int main(int argc, char ** argv)
+{
+	int i;
+	int only_go = 0;
+	char ch;
+	char * optstr = "h:s:gwe:m:";
+	
+	char * server_name;
+	char * session_name;
+
+	time_t last_print=time(NULL);
+
+	IP server_ip;
+
+	assert(BUFFERSIZE + SIZE_TO_SEND + WANT_FREE_SPACE < DATA_BUFFER_SIZE);
+	assert(WANT_FREE_SPACE > BUFFERSIZE);
+	
+	assert(argc);
+	printf("Compiled : "__DATE__ " " __TIME__ "\n");
+	
+	
+
+	server_name = session_name = 0;	
+		
+	while ( -1 != (ch = getopt(argc, argv, optstr)))
+	{
+		switch(ch)
+		{
+			case 'g': /* only go */
+				only_go = 1;
+				printf("Only say go to the server\n");				
+				break;
+				
+			case 'w': /* only go */
+				wait_others = 1;
+				break;
+
+			case 'h' : /* give server host name */
+				assert(server_name = strdup(optarg));
+				break;
+
+			case 's' : /* give session name */
+				assert(session_name = strdup(optarg));
+				break;
+			case 'e' : /* give command */
+				assert(ext_command = strdup(optarg));
+				break;
+			case 'm' : /* multicast */
+#ifdef USE_RMTP_LIB						
+				transport_mode = MULTICAST_TRANS;				
+                                mcast.s_addr=inet_addr(optarg);
+                                if (server_name) {
+					printf ("Error : Multicast support will find the server itself, so do not use -s\n");
+					exit(1);
+				} else if (session_name) {
+					printf ("Error : Multicast support does not rely on session names\n");
+					exit(1);
+				}
+#else /*  USE_RMTP_LIB */
+				printf ("Error : this program has been compiled without multicast support\n");
+				exit(1);
+#endif /* ! USE_RMTP_LIB */				
+				break;
+				
+
+			default:
+				usage();
+				exit(1);
+				break;
+		}
+	}
+		
+		
+
+	if (optind < argc) 
+	{
+		/* there are some arguments left on the command line, error */	
+		usage();
+		exit(1);
+	}
+			
+
+	if ( (( (!server_name) && (!session_name) ) || ( (server_name) && (session_name) )) && !transport_mode)
+	{
+		usage();
+		printf("Use either -s -h or -m\n");
+		exit(1);
+	}
+		
+
+	if (server_name && !transport_mode) 
+		printf("Server is %s\n", server_name);	
+		
+
+		
+	printf("command = %s\n", ext_command);
+	
+	
+	if (!transport_mode) 
+	{	
+		if (!only_go)		
+		{
+#ifdef USE_DATA_BUFFER	
+			assert(data_buffer = (char *)malloc(DATA_BUFFER_SIZE));
+			data_buffer_end = 0;
+			for (i=0; i < MAX_CONN;i++) data_buffer_pos[i] = -1;
+
+			printf("Data buffer of %d bytes allocated\n", DATA_BUFFER_SIZE);
+#else
+			printf("This program has been compiled without data buffer support\n");
+#endif
+
+			/* var init */
+			FD_ZERO(&sockset);
+			for (i=0; i < ARITE_MAX;i++) children[i].exists = 0;
+
+
+			/* start listen */
+			socket_server = listen_port(PORTNUMDATA);
+			assert(socket_server >=0);
+			FD_SET(socket_server, &sockset);
+			fd_max = max(socket_server, fd_max);
+		}
+
+
+		/* find server */
+		if (session_name)
+		{
+			assert(udp_find_server(session_name, &server_ip) == 0);
+		}
+		else 
+		{
+			assert(get_ip_of(server_name, &server_ip) == 0);
+		}
+
+
+		printf("Server IP is %s\n", inet_ntoa(server_ip));		
+	
+		/* call server */
+	
+		socket_command = call_port(server_ip, PORTNUMCOMM);
+		if (socket_command < 0)
+		{
+			perror("connect");
+			abort();
+		}
+		FD_SET(socket_command, &sockset);
+		fd_max = max(socket_command, fd_max);	
+
+	
+		say_hello();
+	}
+	
+	if (only_go)
+	{
+		say_go_now();
+		return 0;
+	}
+	else 
+	{
+		int status;
+		if (transport_mode == TCP_TREE_TRANS)
+		{
+			say_accept_data();
+			tcp_tree_main_loop();
+		}
+#ifdef USE_RMTP_LIB
+		else if (transport_mode == MULTICAST_TRANS) /* multicast ! I take control here :) */
+		{
+			multicast_main_loop();
+
+		}
+#endif		
+		printf("Waiting for child to terminate...\n");		
+		wait(&status);
+		printf("Child exited with status %d\n", status);		
+	}
+	return 0;
+}

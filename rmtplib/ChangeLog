@@ -1,0 +1,11 @@
+14/05/01:
+	Mikmak : 	RMTP started
+15/05/01:
+	Mikmak : 	session management started
+16/05/01:
+	Mikmak : 	client can connect / disconnect to server
+			added tests apps
+18/05/01:
+	Mikmak :	send window implemented
+			server can transmit to client
+

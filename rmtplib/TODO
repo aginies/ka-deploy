@@ -1,0 +1,25 @@
+/*
+ * $Revision: 1.2 $
+ * $Author: mikmak $
+ * $Date: 2001/07/01 15:27:18 $
+ * $Header: /cvsroot/ka-tools/ka-deploy/rmtplib/TODO,v 1.2 2001/07/01 15:27:18 mikmak Exp $
+ * $Id: TODO,v 1.2 2001/07/01 15:27:18 mikmak Exp $
+ * $Log: TODO,v $
+ * Revision 1.2  2001/07/01 15:27:18  mikmak
+ * multicast is now integrated and working. Many updates to rmtplib and optimization for Ka.Still much to do ...
+ *
+ * Revision 1.1  2001/06/29 12:04:58  mikmak
+ * added
+ *
+ * $State: Exp $
+ */
+	
+Some great things to do :
+->implement go_now for KA :)
+->stop the burst when starting transfer
+->improve tree management
+->improve session management
+->improve init connection
+->improve network throughput (as i know it is possible since i got more than 8Mbytes/s while testing but was not stable/scalable enough for production work)
+->try new RMTP algos ...
+

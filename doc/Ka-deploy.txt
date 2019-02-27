@@ -1,0 +1,58 @@
+
+What is Ka-deploy ?
+-------------------
+
+Amongst the numerous issues when dealing with the installation of a cluster is the problem of the installation of the OS on all (and it means MANY) the machines.
+Ka-deploy is a tool that allows you to replicate one Linux machine many times at the same time, I mean you can create many clones of one machine at the same time. 
+Typically you only need to install one machine, prepare a few scripts of autoconfiguration that will update a few parameters on the nodes, and then use Ka-deploy to replicate your system on N nodes a the same time, and efficienly.
+
+
+How does it work ?
+------------------
+
+Ka-deploy needs you to start a minimal Linux system (with initrd or nfs_root) on the nodes you want to install (target nodes). This system will then launch the Ka-deploy client, which will connect to the Ka-deploy server. The Ka-deploy server must be running on the node you want to clone.
+After the clients have contacted the server, they connect to each other to form a chain of TCP connections. This chain will then be used by the server (which is  at the extremity of the chain) to send the data (i.e the system) to all the clients : the server uses the tar command to produce a flow of data corresponding to the system, and sends this flow thru the chain. The clients read the data arriving thru the chain, send it to the tar command to recreate the system on the local disk, and send it also to the rest of the chain.
+
+
+	tar             tar             tar               tar             tar
+	 |               ^               ^                 ^               ^
+	 |               |               |                 |               |
+	 V               |               |                 |               |
+	server ------> client1 ------> client2 -------> client3 ------> client4 ---...
+	
+Ka-deploy is just a tool to create this TCP chain and send data with it, but comes with everything you need to set up a network install for your cluster nodes.
+
+In the facts, the installation of a node happens like this:
+
+	* Network boot (dhcp - bootstrap load by tftp)
+	* Linux kernel downloaded by tftp, and booted
+	* NFS root mounted, HD partitionning
+	* ka-deploy client is run, and data written on the HD
+	* reboot, and voila !
+
+
+Performances
+------------
+
+On a switched fast ethernet network with full duplex, this method gives the maximum bandwith for sending the data from the server to all the machines, and the total time taken by the replication is almost independant of the number target machines.
+For instance, on our cluster of PIII-733, with IDE drives, I can install 60 nodes at the same, sending 1.5 gigabytes with the average bandwith of 7 MBytes/second.
+In fact the limiting factor is the speed of the hard drives, and the use of tar to replicate the system does not help (on the performance point of view).
+
+If you take a look at the server you will see that in fact the clients do not form a chain, but a tree. But the best performance is obtained when the arity of this tree is 1, and then this tree is merely a chain :)
+
+
+How can I use it ?
+------------------
+
+ * For information of the ka-d-server and ka-d-client programs, read ka-deploy manpage. 
+ * Server side
+ 
+The server program just needs to be run on the node you want to clone. For permissions issues, be sure to run the server as root. If you don't, you will encounter bad permissions and missing files on the replicated systems. 
+
+
+ * Client side :
+
+For a network install, you must set up the network boot of the nodes.
+Read the installation.txt file for more information about the whole boot/install process and some examples.
+
+

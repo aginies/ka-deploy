@@ -1,0 +1,182 @@
+Ka-deploy has been designed to be used with a certain boot method which is boot-on-LAN, using the PXE protocol.
+boot-on-LAN seems indeed to be the only realistic method to control the way the PC's of a cluster boot.
+
+
+KA-BOOT/BPBATCH
+---------------
+
+At the beginning, what we used on our icluster was the free program BpBatch (see www.bpbatch.org, and their howto on remote boot).
+BpBatch is a bootstrap program that will be loaded by the PXE bootrom. When a machine boots, it uses DHCP to get an IP address, and then TFTP to download BpBatch from a server. BpBatch has a quite powerful scripting language that allows you to:
+-partition your hard drive
+-check local/remote(tftp) files
+-boot on the hard drive, download by TFTP and boot a Linux kernel, a floppy image (for instance a DOS floppy).
+
+For instance here is the BpBatch script line that we use to boot Linux with nfs_root and start the Ka-deploy client :
+
+linuxboot "linux2217nfsroot" "root=/dev/nfs nfsroot=129.88.96.252:/tftpboot/NFSROOT ro"
+
+We no longer use BpBatch, we now use 'ka-boot', that does almost
+the same thing but is open source.
+
+ka-boot does not handle the hard drive as BpBatch can, but it has a small
+scripting language, can boot Linux kernels, or let the BIOS boot on the hard
+drive.
+ka-boot is much smaller than bpbatch and boots faster.
+
+
+DHCPD AND KA-BOOT/BPBATCH
+-------------------------
+
+During the boot process, KaBoot (or BpBatch) loads and runs a script that is fetched thru TFTP from the TFTP server. The name of this script is given in the dhcp configuration,
+and is one of the per-host options of dhcpd (option 135 or 155, depending of your version of PXE). Used like this, this method lacks a lot flexibility, since if you want to change the script used by bpbatch (say you want to boot a node with a different kernel), you must modify /etc/dhcpd.conf and restart dhcpd.
+
+Our method is to use symbolic links : in /etc/dhcpd.conf, each host is given the name of a bpbatch script that is only a symbolic link to a real script. If we want to change the script, only the link has to be changed, not /etc/dhcpd.conf.
+
+For instance for BpBtatch, in /etc/dhcpd.conf :
+
+        host icluster224 
+        {
+                hardware ethernet 00:01:02:01:a2:aa;
+                fixed-address 129.88.96.224;
+                filename "bpbatch";
+                next-server 129.88.96.252;
+                option option-135 "scripts/224";
+        }
+
+and on the tftp server :
+
+# ls -l scripts/224.bpb 
+scripts/224.bpb -> /tftpboot/kernel243com.bpb
+
+the scripts set and range_set in the scripts directory are used to manipulate these links.
+
+The same method is employed also with ka-boot. with, in /etc/dhcpd.conf :
+
+        host icluster224 
+        {
+                hardware ethernet 00:01:02:01:a2:aa;
+                fixed-address 129.88.96.224;
+                filename "kaboot";
+                next-server 129.88.96.252;
+                option option-135 "kascripts/224.kbt";
+        }
+
+and on the tftp server :
+
+# ls -l kascripts/224.kbt
+kascripts/224.kbt -> /tftpboot/ka_deploy.kbt
+
+the script ka_range_set does manipulate these links.
+
+USE WITH KA-DEPLOY
+------------------
+
+Something great with Ka-boot(or BpBatch) is that the boot method can be dependant on a few parameters. For instance when we use Ka-deploy, the installation uses 3 reboots:
+-first boot launches the Ka-deploy client
+-second boot launches the installed Linux system, but since Ka-deploy can't install the boot sector we have to download a linux kernel. This linux system will then install the boot sector with lilo, and reboot
+-third reboot, the system is ready, boot on the hard drive.
+
+But the trick is that we have only ONE ka-boot or bpbatch script. During the several steps of the installation, one file on the tftp server, whose name is for instance /tftpboot/steps/129.88.96.1 for the machine whose IP is 129.88.96.1, will contain the name of the current step, and be updated by shell scripts after the use of Ka-deploy, or after LILO has run (see install and ka_deploy_lilo in the scripts directory).
+
+So finally here is my bpbatch script for ka-deploy:
+#--------------------------------------------------------------------------------------
+showlog
+set CacheNever="On"
+
+if "ready" in-file "steps/$BOOTP-Your-IP" goto step_ready
+if "lilo" in-file "steps/$BOOTP-Your-IP" goto step_lilo
+
+# step 1 : Ka-deply
+linuxboot "linux2217nfsroot" "root=/dev/nfs nfsroot=129.88.96.252:/tftpboot/NFSROOT ro"
+
+:step_lilo
+# step 2 : LILO 
+linuxboot "linux22173comst" "root=/dev/hda1 BOOT_IMAGE=linux"
+
+:step_ready
+# step 3, system ready
+HdBoot
+#--------------------------------------------------------------------------------------
+
+With ka-boot : 
+The same method works also with ka-boot, but of course is slightly different :
+the 'step file' on the tftp server is a mini ka-boot script that contains for
+instance :
+	set "ready" $step
+
+and the ka_deploy.kbt script looks like :
+
+        # for machine with ip 1.2.3.4, current step is in the
+        # /tftpboot/steps/1.2.3.4 file on the tftpserver
+        # and this file contains : set "foo" $step
+        set "steps/" $stepfile
+        append $Client-IP $stepfile
+        run $stepfile
+
+        echo "Step is : "
+        echo $step
+        echo "\n"
+
+        cmp $step "ready"
+        jeq step_ready:
+
+        cmp $step "lilo"
+        jeq step_lilo:
+
+
+        # First step of the install, boot linux with a nfsroot
+        echo "GOING TO FIRST STEP OF INSTALL"
+        linuxboot "linux242nfsroot" "root=/dev/nfs
+nfsroot=129.88.69.4:/tftpboot/NFSROOT ro"
+        end
+
+step_lilo:
+        # second step, system has been written to HD but no bootloader (LILO)
+        # has benn installed yet
+        linuxboot "linux242nfsroot" "root=/dev/hda1" 
+
+step_ready:
+        # last step, let the BIOS boot on the hard drive
+        exit
+
+
+TIPS FOR SETTING UP DHCPD
+-------------------------
+
+There are many problems with DHCP/PXE:
+ * You cannot be sure that something will work. I had once set up a configuration that worked fine on my test machine. When our cluster arrived, of course, it did not work, and I had for instance to use option 135 instead of option 155. Only because of a different PXE version.
+ * Sometimes it is tricky to send the parameters for pxe/bpbatch with dhcp. For instance, in order to use BpBatch with dynamic hosts in dhcp, I had to 'dirty hack' my dhcpd deamon.
+ * If you want to create static hosts configuration for a lot of machines, you need their MAC address. You can do it by hand. You can also boot them with a dynamic host configuration, and
+then take the addresses on the leases file or on the log files. There is a PERL script in the scripts directory that does that (recup_addresses_mac.pl). But you must be careful and switch the machines on in the good order. If your machines have CDROM drives, you will be able to check that order later with the 'eject' command (very useful)
+
+ * NEW : you can also use my mini dhcp server to discover the MAC addresses. See scripts/dhcpd/README for more details ***
+
+ * With Linux/nfs_root, use Linux 2.2 : Linux 2.4 has no DHCP IP autoconfiguration (only BOOTP) and won't work with dynamic hosts configuration. (wrong  ?)
+
+DISKLESS LINUX SYSTEM
+---------------------
+
+Once the Linux kernel has been booted, everything remains to be done. This includes:
+	* HD partitionning
+	* partition formatting
+	* running ka-d-client and receiving the data
+
+All theses tasks are done in the 'install' script that can be found in the 'scripts' directory. This script should be run by Linux when it boots the nfs-root system.
+This script will run various tasks depending on the installation type that is wanted. You must edit it to tweak it.
+
+Depending on what you want to do, the ka-d-server options will not always be the same. See the 'serve_install' script in the scripts directory for examples.
+
+* Linux install
+
+When Linux is to be installed, the partitionning is done simply with fdisk (actually sfdisk), and data are written to the partition using the tar command.
+
+* Windows install
+
+So far the only way to clone windows machines is to really mean it, and so the partition table has to be copied also.
+ka-deploy (I mean a ka-d-server on the server and ka-d-client on the nodes) is run first with sfdisk to do this.
+Then the data of the windows partition are copied using dd, and so running ka-deploy a second time.
+You can see that ka-d-server or ka-d-client are called at least 2 times for cloning windows machines, in the 'install' or 'serve_install' scripts. 
+One time for the partition table, one time for windows, and one time for Linux.
+You must be also aware that before cloning windows the node must be a bit prepared, and that a post-installation phase must run after the installation.
+See it in windows.txt. The .zip file mentioned can be found in the download page of Ka on the sourceforge site.
+

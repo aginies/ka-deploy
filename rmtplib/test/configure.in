@@ -1,0 +1,32 @@
+/*
+ * $Revision: 1.1 $
+ * $Author: mikmak $
+ * $Date: 2001/06/29 12:04:58 $
+ * $Header: /cvsroot/ka-tools/ka-deploy/rmtplib/test/configure.in,v 1.1 2001/06/29 12:04:58 mikmak Exp $
+ * $Id: configure.in,v 1.1 2001/06/29 12:04:58 mikmak Exp $
+ * $Log: configure.in,v $
+ * Revision 1.1  2001/06/29 12:04:58  mikmak
+ * added
+ *
+ * $State: Exp $
+ */
+	
+dnl Process this file with autoconf to produce a configure script.
+AC_INIT(server.cc)
+VERSION=0.1
+PACKAGE=test
+dnl Checks for programs.
+AC_PROG_CXX 
+AC_ARG_PROGRAM
+AC_PROG_INSTALL
+
+dnl Checks for libraries.
+
+dnl Checks for header files.
+AC_CHECK_HEADERS(unistd.h)
+
+dnl Checks for typedefs, structures, and compiler characteristics.
+
+dnl Checks for library functions.
+
+AC_OUTPUT(Makefile)

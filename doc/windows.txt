@@ -1,0 +1,71 @@
+================================================================================
+README file: Installing a cluster of Windows 2k machines with ka-tools 
+================================================================================
+
+This document explains the pre-installation procedure you should perform on your 
+Windows 2000 machine source before proceeding to its replication to a whole 
+cluster of Windows machines.
+
+
+
+Prerequisite: 
+-------------
+You must first download the .zip file for windows on the download page of the
+Ka tools, on sourceforge.
+The scripts contains in this zip files use the command "sc.exe" which is part of 
+the Windows 2000 Server Resource Kit.
+
+
+System Installation: 
+--------------------
+The machine source must be installed with a dual boot system (Linux / Windows 
+2000), as the server program used for the replication process uses Linux 
+standard commands.
+As this machine will be the reference of your Windows Cluster, you should 
+install every software you think you will need to find on the cluster's machine 
+(let's say cygwin, MPI, Athapascan, VNC...). Don't forget that the settings of 
+the machine source will appear on each machine you are about to install, so you 
+should create the proper users and administrators accounts, connect network 
+drives, start the services you need (think about installing VNC server, telnet 
+server, rsh server, etc...).
+
+
+Pre-installation: 
+-----------------
+The zip file you have just uncompressed contains a script file call 
+"PreInst.cmd". You should run this script as soon as you believe your source 
+system is properly configured as it will make it almost ready for replication. 
+Then, you must configure Windows to log automaticaly as administrator, and 
+reboot your machine with Linux.
+what's inside PreInst.cmd: the script removes the computer from the NT domain, 
+disables the Lan Manager Service (after replication, all the machine hold the 
+same name, raising a name conflict alert), and set the system to run the 
+postinstall script on the next reboot.
+
+
+Replication: 
+------------
+To launch the replication process, please refer to the ka-tools manual.
+
+
+Post-installation: 
+------------------
+You don't have to worry about post-installation as it is unattended. On the 
+first boot, the newly installed machines will run PostInst.cmd. They will then 
+find their real name from the DNS server (or the hosts files if the server is 
+not available, or will invent a new name if they can't find the real one), set 
+the Lan Manager to start automaticaly on the next boot, change the SID and set 
+the system to start the netlogon service on each boot (well, we needed that to 
+use rsh and mpirun on our machines, you may not need it...).Then they will 
+reboot.
+NB: well, the reboot after post-installation can take time as changing the sid 
+is quite a long process (2-3 minutes). Windows may find some new hardware if you 
+machines differs slightly and pop a message windows hiding the newsid's. Never 
+mind, it's working but long, just be patient.
+When your machines restart, they will belong to a workgroup. We included in the 
+zip file, a program (joindom.exe) very usefull to join the NT domain from a 
+command line. If your rshd service is properly configured, then we suggest that 
+you use "rsh joindom ..." in a script file to join every machines of your 
+cluster, or rshp (which is a parallel rsh developped in our Labs) for a shorter 
+execution time.
+ 

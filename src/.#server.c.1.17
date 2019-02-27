@@ -1,0 +1,1312 @@
+/*
+ *
+ * $Revision: 1.17 $
+ * $Author: sderr $
+ * $Date: 2001/07/02 11:39:13 $
+ * $Header: /cvsroot/ka-tools/ka-deploy/src/server.c,v 1.17 2001/07/02 11:39:13 sderr Exp $
+ * $Id: server.c,v 1.17 2001/07/02 11:39:13 sderr Exp $
+ * $Name:  $
+ * $Log: server.c,v $
+ * Revision 1.17  2001/07/02 11:39:13  sderr
+ * Moved things so that:
+ * 	-multicast support is optional (check Makefile)
+ * 	-.c files again can be compiled using gcc, not g++ (added multicast_server.cpp and multicast_client.cpp)
+ * Cleaned transport_mode variable
+ *
+ * Revision 1.16  2001/07/01 15:27:18  mikmak
+ * multicast is now integrated and working. Many updates to rmtplib and optimization for Ka.Still much to do ...
+ *
+ * Revision 1.15  2001/06/29 09:31:45  sderr
+ * *** empty log message ***
+ *
+ * Revision 1.14  2001/06/06 09:52:02  sderr
+ * Added comments
+ *
+ * Revision 1.13  2001/06/05 08:51:57  sderr
+ * Added [ -e command ] command line option
+ *
+ * Revision 1.12  2001/06/01 09:34:07  sderr
+ * Added comments, removed useless nb_client variable
+ *
+ * Revision 1.11  2001/06/01 09:04:26  sderr
+ * The tree now gets built only when all the clients have contacted the server, so that the tree can be adapted to some network topology.
+ * Implemented minimal adaptation method : sort IP addresses in ascendent order.
+ *
+ * Revision 1.10  2001/05/30 14:35:51  sderr
+ * Added udp support, clients now can find the server by sending UDP broadcasts
+ *
+ * Revision 1.9  2001/05/30 13:16:09  sderr
+ * Added getopt use for command-line parsing
+ *
+ * Revision 1.8  2001/05/21 10:03:13  sderr
+ *
+ * Revision 1.7  2001/05/21 09:19:14  sderr
+ *
+ * Revision 1.6  2001/05/11 09:42:40  sderr
+ * Added some time measures
+ *
+ * Revision 1.5  2001/05/10 12:57:01  sderr
+ * Clients can no more connect when the transfer has started.
+ * Added must_start_transfer and transfer_started to replace
+ * the wanted_clients and pipe_read modifications side effects.
+ *
+ * Revision 1.4  2001/05/10 12:18:02  sderr
+ * Added comments, fixed open comment on CVS header
+ * Function renaming in client
+ *
+ * Revision 1.3  2001/05/03 12:26:24  sderr
+ * Just playing with CVS.. again :)
+ *
+ * $State: Exp $
+ * $Sources$
+ */
+
+#include "packet.h"
+#include "tree.h"
+#include "udp.h"
+
+#include <stdlib.h>
+#include <assert.h>
+#include <stdio.h>
+#include <malloc.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <errno.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/time.h>
+
+
+
+
+
+
+#define SORT_IP
+/** if SORT_IP is defined, the clients will be added in the tree with their IPs in ascendent order,
+ this can help to minimize inter-switch communications if arity = 1*/
+
+static char version[] = SOFT_VERSION;
+
+#define EXTCOMMAND "(cd /; tar  --create --one-file-system --sparse /)"
+
+// COMMANDS BELOW ARE FOR DEBUGGING PURPOSES :
+//#define EXTCOMMAND "(cd /; tar cl /home)"
+//#define EXTCOMMAND "(cd /usr/X11R6; tar cl /usr/X11R6)"
+//#define EXTCOMMAND "(cd /usr; tar cl /usr)"
+//#define EXTCOMMAND "dd if=/dev/zero bs=1000k count=1000"
+//#define EXTCOMMAND "ping -c 10 zuni"
+//#define EXTCOMMAND "(cd /home; tar cl /home)"
+
+
+char * ext_command = EXTCOMMAND;
+
+struct client {
+	int fd;
+	IP ip;
+	struct client * children[ARITE_MAX];
+	struct client * daddy;
+	int nb_children;
+	/* number of nodes levels under this node in the tree, for tree balance */
+	int levels_under;
+	int data_connected; // has a data connection to his daddy ?
+};
+
+/** arity of the tree */
+int arite;
+
+/** number of clients we want before we start the transfer */
+int wanted_clients;
+
+int busy_clients = 0;
+
+/** name of the session used for UDP-broadcast-based server finding */
+char * session_name;
+
+
+#ifdef USE_RMTP_LIB
+/* Multicast IP */
+IP mcast;
+
+/* from multicast_server.cpp : */
+extern  void multicast_main_loop(); 
+
+#endif /* use multicast */
+
+enum { TCP_TREE_TRANS, MULTICAST_TRANS } transport_modes;
+
+/* Transport mode */
+int transport_mode = TCP_TREE_TRANS; 
+
+
+/** must_start_transfer : this var is used to know where we are in the process of accepting the clients
+	- waiting_for_clients : we still want more clients to contact us
+	- must_build_tree : we have enough clients, or a clients said 'go', we will build the tree on the next main loop iteration
+	- building_tree : we have sent each client its peer IP, we are waiting for them to report the connections 
+	- tree_built : all inter-clients connections have been made
+	- tree_in_use : transfer has started
+	
+	this var was previously a boolean, and maybe should get another name.
+*/
+enum must_start_transfer_state { waiting_for_clients, must_build_tree, building_tree, tree_built, tree_in_use };
+int must_start_transfer = waiting_for_clients;
+	
+
+
+
+/** connected_clients : the number of clients who have established a data connection with their peer (daddy) */
+int connected_clients = 0;
+
+/** clients_wanting_data : the number of clients who said they want data */
+int clients_wanting_data = 0;
+
+/** transfer_started : boolean : transfer has started ? */
+int transfer_started = 0;
+
+/** flow_ended : boolean : has the server sent all the data ? */
+int flow_ended = 0;
+
+/** use a struct client to represent the server at the top of the tree */
+struct client * myself;
+
+/** struct connection : data structure associated to each control connection */
+enum conn_state { no_conn, connected, got_hello, wants_data };
+
+struct connection
+{
+	enum conn_state state;
+	IP peer_ip;
+	struct client * client;
+};
+
+/** control connections opened by the clients */
+#define MAX_CONN 300
+struct connection connections[MAX_CONN];
+
+/** clients who have successfully said 'hello' and who accept data*/
+#define MAX_CLIENTS 300
+struct client * clients_pool[MAX_CLIENTS];
+int nb_clients_in_pool = 0;
+
+/** server IP */
+IP my_ip;
+
+/** socket for the control connection listener */
+int socket_server = -1;
+
+/** max file descriptor number, used with select() call */
+int fd_max;
+
+/** fd_set used with select() */
+fd_set sockset;
+
+/** socket for listening to UDP requests */
+int udp_sock = -1;
+
+/** socket for the data connection listener */
+int socket_data_server = -1;
+
+/** a child is someone who has a data connection with us */
+struct child
+{
+	int exists;
+	int fd;
+};
+
+struct child children[ARITE_MAX];
+int nb_children = 0;
+
+/** the pipe with the external command */
+int pipe_read = -1; /** server end of the pipe */
+int pipe_write = -1; /** external command end of the pipe */
+
+
+int max(int a, int b) { return a > b ? a : b; }
+
+
+/** get the IP of this machine.
+	fills the IP pointed by ip parameter
+	returns 0 if all is OK
+	returns -1 if a problem occured
+*/
+int get_my_ip(IP * ip)
+{
+	char myhostname[MAXHOSTNAME + 1];
+
+	struct sockaddr_in sa;
+	struct hostent * he;
+
+	int sock;
+	int e;
+	int flag = 1;
+
+	/* I suppose there is an easier way of gettign my IP, but ... */
+	/* have a look to RMTPclient.cc function get_ip(char *device), it allows you to choose your net interface, this could be a command line option
+	 * which you could pass to RMTPlib (setInterface()) but it is certainly not _easier_ than your function
+	 * */ 
+
+	gethostname(myhostname, MAXHOSTNAME);
+
+	he = gethostbyname(myhostname);
+	if (he == NULL) return -1;
+	memcpy((char *) ip, he->h_addr, he->h_length);
+ 
+	return 0;
+}	
+
+/* IPv4, 32bit only HACK !!!!! */
+/** same_ip : returns true if a and b are the same IP address */
+int same_ip(IP a, IP b)
+{
+	int *x = (int *) &a;
+	int *y = (int *) &b;
+	return *x == *y;
+}
+
+/* IPv4, 32bit only, UGLY HACK !!!!! */
+/** compare_ip : comparison between two IP addresses used to sort them */
+int compare_ip(IP a, IP b)
+{
+	int *x = (int *) &a;
+	int *y = (int *) &b;
+	return *x - *y;
+}
+
+
+/** listen_port : open a TCP socket to listen on a specified port;
+	returns -1 if it fails, socket number otherwise
+*/
+int listen_port(unsigned short port)
+{
+
+	char myhostname[MAXHOSTNAME + 1];
+
+	struct sockaddr_in sa;
+	struct hostent * he;
+
+	int sock;
+	int e;
+	int flag = 1;
+
+	memset(&sa, 0, sizeof(struct sockaddr_in));
+
+	gethostname(myhostname, MAXHOSTNAME);
+
+	he = gethostbyname(myhostname);
+	if (he == NULL) return -1;
+
+	sa.sin_family = he->h_addrtype;
+	sa.sin_port = htons(port); 
+
+
+	sock = socket(AF_INET, SOCK_STREAM, 0);
+	if (sock < 0) return -1;
+	setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+	
+
+	e = bind(sock, (struct sockaddr *) &sa, sizeof(struct sockaddr_in));
+	if (e < 0) 
+	{
+		close(sock);
+		return -1;
+	}
+
+	listen(sock, 200); 
+
+	printf("Socket %d on port %d on %s ready.\n", sock, port, myhostname);
+
+	return sock;
+}
+
+
+
+
+
+
+
+
+/** send_packet_client : send a packet to a client over a control connection
+*/
+int send_packet_client(struct client * client, struct server_packet * packet)
+{
+	struct connection * conn = &connections[client->fd];
+	assert(conn->state >= got_hello);
+	
+	return write(client->fd, packet, sizeof(struct server_packet));
+}
+
+/** give_ip_client : when building the tree, tell to a client which IP he has to connect to
+*/
+int give_ip_client(struct client * client, IP ip)
+{
+	struct server_packet packet;
+	struct packet_server_gives_ip * pdata;
+	
+	packet.type = server_gives_ip;
+	pdata = (struct packet_server_gives_ip *) &(packet.data);
+	pdata->ip = ip;
+	
+	send_packet_client(client, &packet);
+}
+
+/** say_go_client : sends a 'packet_server_says_go' to a client : has no effect (and is never called, I can't remember why I wrote this function)
+*/
+int say_go_client(struct client * client)
+{
+	struct server_packet packet;
+	struct packet_server_says_go * pdata;
+	
+	packet.type = server_says_go;
+	pdata = (struct packet_server_says_go *) &(packet.data);
+	
+	send_packet_client(client, &packet);	
+}
+
+/** say_finish_client : sends a 'packet_server_says_finish' to a client : 
+*/
+int say_finish_client(struct client * client)
+{
+	struct server_packet packet;
+	struct packet_server_says_finish * pdata;
+	
+	packet.type = server_says_finish;
+	pdata = (struct packet_server_says_finish *) &(packet.data);
+	
+	send_packet_client(client, &packet);	
+}
+
+
+/** add a client * in the tree, somewhere under the given 'root' 
+  return value : true if levels_under of this root has been changed */
+int add_client_in_tree_under(struct client * root, struct client * leaf)
+{
+	if (root->nb_children < arite)
+	{
+		/* ok, stop here */
+		root->children[root->nb_children++] = leaf;
+		leaf->daddy = root;
+		if (root->nb_children == arite) root->levels_under = 1;
+		return (root->nb_children == arite); /* depth changed only if this is our last child */
+	}
+	else
+	{
+		/* find amongst the children which has the lowest 'under' */
+		int num;
+		int min = 9999999;
+		int i;
+		int changed;
+		for (i=0; i < arite; i++)
+		{
+			if (root->children[i]->levels_under < min)
+			{
+				min = root->children[i]->levels_under;
+				num = i;
+			}
+		}
+
+		changed = add_client_in_tree_under(root->children[num], leaf);
+
+		if (changed)
+		{
+			int oldval = root->levels_under;
+			min = 9999999;
+			for (i=0; i < arite; i++)
+			{
+				if (root->children[i]->levels_under < min)
+				{
+					min = root->children[i]->levels_under;
+					num = i;
+				}
+			}
+			min++;
+
+			if (min > oldval)
+			{
+				root->levels_under = min;
+				return 1;
+			}
+			else
+				return 0;
+		}
+	}
+}
+				
+/** add_client_in_tree : add a client in the tree
+ */
+void add_client_in_tree(struct client * leaf)
+{
+	char buf[20];
+	add_client_in_tree_under(myself, leaf);
+	
+	strcpy(buf, inet_ntoa(leaf->ip));
+	printf("Added client %s, daddy = %s\n", buf, inet_ntoa(leaf->daddy->ip));
+}
+
+/** new_client : creates a new struct_client and initializes it
+*/
+struct client * new_client(IP ip, int fd)
+{
+	struct client * p = (struct client *)malloc(sizeof(struct client));
+	
+	assert(p);
+	
+	p->ip = ip;
+	p->fd = fd;
+	p->nb_children = 0;
+	p->levels_under = 0;
+	p->data_connected = 0;
+	return p;
+}	
+
+
+/** tree_client_got_client : when a client reports that one of his children opened the data connection between them,
+	update our data structures. 
+	Broken function name, sorry
+*/
+void tree_client_got_client(struct client * daddy, IP child_ip)
+{
+	int i;
+	for (i=0; i < daddy->nb_children; i++)
+		if (same_ip(daddy->children[i]->ip,child_ip))
+		{
+			daddy->children[i]->data_connected = 1;
+			connected_clients++;
+			busy_clients++;
+			printf("His daddy reports %s has opened data connection\n", inet_ntoa(child_ip));
+			return;
+		}
+	
+	/* child has not been found, bug hanging around */
+	assert(0);
+}
+		
+
+/** draw_tree_under : print the structure of the tree under a given client.
+	recursive function
+*/
+void draw_tree_under(struct client * root, int tabs)
+{
+	int i;
+	/* indentation */
+	if (arite > 1)
+	for (i=0; i < tabs; i++) putchar('\t');
+
+	
+	printf("IP=%s, fd=%d, nb_children=%d, depth=%d (%s)\n", inet_ntoa(root->ip), root->fd, root->nb_children, root->levels_under, root->data_connected ? "connected" : "NOT connected");
+	
+
+	for (i=0; i < root->nb_children; i++)
+		draw_tree_under(root->children[i], tabs+1);
+}
+
+
+/** add_client_to_pool : add a client to the pool of clients 
+*/
+void add_client_to_pool(struct client * cli)
+{
+	assert(nb_clients_in_pool < MAX_CLIENTS);
+	
+	clients_pool[nb_clients_in_pool++] = cli;
+}
+
+
+/** qsort_helper : the function I use with qsort() when I create the tree from the pool 
+*/
+int qsort_helper(const void * a, const void * b)
+{
+	struct client * client_a;
+	struct client * client_b;	
+	int r;
+	client_a = *((struct client **) a);
+	client_b = *((struct client **) b);
+	
+	r = compare_ip(client_a->ip, client_b->ip);
+	return r;
+	
+}
+
+/** build_tree_from_pool : build the tree with the clients from the pool, trying to take into account the 'topology' of the network.
+	For my network I only have to sort the IP addresses, in the case where arity = 1
+*/
+void build_tree_from_pool()
+{
+	
+	int i;
+	
+#ifdef SORT_IP
+	qsort(clients_pool, nb_clients_in_pool, sizeof(struct client *), qsort_helper);
+#endif
+
+	for (i = 0; i < nb_clients_in_pool; i++)
+	{
+		struct client * cli = clients_pool[i];
+		
+		
+		add_client_in_tree(cli);
+
+		/* give to the client the IP of its future peer */
+		give_ip_client(cli, cli->daddy->ip); 
+	}
+}
+
+
+
+
+/** show_nbclients : just print the nimber of connected clients 
+*/
+void show_nb_clients()
+{
+	printf("Clients : want_data %d  / connected %d\n", clients_wanting_data, connected_clients);
+}
+
+
+/** draw_tree : print the whole tree
+*/
+void draw_tree()
+{
+	draw_tree_under(myself, 0);
+	show_nb_clients();
+}
+	
+
+/** close_connection : when we close a connection, we might have data structures to update.
+	completely broken function
+*/
+int close_connection(int fd)
+{
+	if (connections[fd].state == wants_data)
+	{
+		struct client * client = connections[fd].client;
+		if (!flow_ended) printf("AAARGH I dunno yet how to close a connection with a client..\n");
+		if (client->data_connected) connected_clients--;
+	}
+	
+	close(fd);
+	FD_CLR(fd, &sockset);		
+	return -1;
+}
+
+		
+/** accept_new_connection : a clients wants to open a control connection with us, welcome him
+*/
+void accept_new_connection()
+{
+	struct sockaddr_in client_addr;
+	socklen_t client_addr_size;
+	struct hostent * heclient;
+	int socket_client;
+	IP ip;
+
+
+/*	printf("Accepting new connection\n"); */
+	
+	memset(&client_addr,0, sizeof(client_addr));
+	client_addr_size = sizeof(client_addr);
+	socket_client = accept(socket_server, (struct sockaddr *) &client_addr, &client_addr_size);
+	ip = client_addr.sin_addr;
+	
+	printf("Accepting connection from %s\n", inet_ntoa(ip));
+	
+	if (socket_client >= MAX_CONN)
+	{
+		warn("uh, oh, connection with fd = %d\n", socket_client);
+		close(socket_client);
+		return;
+	}
+	
+	if (socket_client > fd_max) fd_max = socket_client;
+	FD_SET(socket_client, &sockset);	
+
+	connections[socket_client].state = connected;
+	connections[socket_client].peer_ip = ip;
+	connections[socket_client].client = 0; /* may be useful for some assertions */
+	
+
+	
+	show_nb_clients();
+}
+
+
+/** THE FOLLOWING FUNCTIONS CONTAIN PROCESSING TO BE DONE WHEN RECEIVING COMMANDS ON A CONTROL CONNECTION.
+	They are named according to this scheme : int process _packet_name
+*/
+
+
+/** process_client_says_hello : means process(client_says_hello) : a client sent a 'hello' packet, do what must be done.
+	this means : check software version, create data structure for this client
+*/
+int process_client_says_hello(struct packet_client_says_hello * packet, int socket_source)
+{
+	struct connection * conn = &connections[socket_source];
+	int version_ok = 0;
+	
+	if (conn->state != connected) /* no conn, or already got hello */
+	{
+		close_connection(socket_source);
+		return -1;
+	}
+	
+	packet->version[VERSION_LEN-1]='\0';
+	if (strcmp(packet->version, version))
+	{
+		close_connection(socket_source);
+		return -1;
+	}
+	
+	/* everything is fine */
+	conn->state = got_hello;
+	conn->client = new_client(conn->peer_ip, socket_source);
+	
+	printf("client says hello !\n");
+	return 0;	
+}
+		
+/** process_client_got_client : one of the clients has established a connection with his daddy 
+*/
+int process_client_got_client(struct packet_client_got_client * packet, int socket_source)
+{
+	// find the struct client
+	struct client * client = connections[socket_source].client;
+	assert(client);
+	assert(client->fd == socket_source);
+
+	tree_client_got_client(client, packet->child_ip);
+	return 0;
+}
+
+/** process_client_accepts_data : a client says he accepts data
+*/
+int process_client_accepts_data(struct packet_client_accepts_data * packet, int socket_source)
+{
+	// find the struct client
+	struct client * client = connections[socket_source].client;
+	struct connection * conn = &connections[socket_source];
+	assert(client);
+	assert(client->fd == socket_source);
+
+	if (conn->state != got_hello) 
+	{
+		close_connection(socket_source);
+		return -1 ;
+	}
+	conn->state = wants_data;
+	printf("Client accepts data\n");
+	
+	clients_wanting_data++;
+	
+/*	add_client_in_tree(conn->client); */
+
+	
+	/* give to the client the IP of its future peer */
+/*	return give_ip_client(conn->client, conn->client->daddy->ip); */
+	
+	add_client_to_pool(conn->client);
+	
+	return 0;
+	
+}
+
+/** process_client_says_go_now : a client wants the transfer to start RIGHT NOW
+*/
+int process_client_says_go_now(struct packet_client_says_go_now * packet, int socket_source)
+{
+	// find the struct client
+	struct connection * conn = &connections[socket_source];
+	struct client * client = connections[socket_source].client;
+	assert(client);
+	assert(client->fd == socket_source);
+
+	if (conn->state != got_hello) 
+	{
+		close_connection(socket_source);
+		return -1 ;
+	}
+
+	printf("Client wants the data transfer to start NOW\n");
+	must_start_transfer = must_build_tree;  /* will be read in next main_loop iteration */
+	close_connection(socket_source);
+	return 0;
+}
+
+
+/** FFFFFFFFIIIIIIIIIXXXXXXXXXXXMMMMMMMMMEEEEEEEEE
+*/
+int process_client_has_finished(struct packet_client_has_finished * packet, int socket_source)
+{
+	// find the struct client
+	struct connection * conn = &connections[socket_source];
+	struct client * client = connections[socket_source].client;
+	assert(client);
+	assert(client->fd == socket_source);
+
+
+	printf("Client has finished transfer\n");
+	busy_clients--;
+	
+	if (busy_clients == 0) {
+		int i;
+		for (i = 0; i < nb_clients_in_pool; i++)
+		{
+			struct client * cli = clients_pool[i];
+			say_finish_client(cli);
+		}
+	}
+			
+		
+	
+	
+	return 0;
+}
+
+
+/** process_packet : got a packet on a control connection, process it
+*/
+int process_packet(struct client_packet * packet, int socket_source)
+{
+	printf("Got packet from client %d, type = %d\n", socket_source, packet->type);
+	switch(packet->type)
+	{
+		case client_says_hello:
+			return process_client_says_hello((struct packet_client_says_hello *) &(packet->data), socket_source);
+		case client_got_client:
+			return process_client_got_client(&(packet->data.got_client), socket_source);
+		case client_says_has_finished:
+			return process_client_has_finished(&(packet->data.has_finished), socket_source);
+		case client_accepts_data:
+			return process_client_accepts_data(&(packet->data.accepts_data), socket_source);
+		case client_says_go_now:
+			return process_client_says_go_now(&(packet->data.go_now), socket_source);
+			
+	}
+	return -1;
+}
+
+/** read_packet_from_socket : select() told us there is something available on a control connection, read it
+*/
+int read_packet_from_socket(int socket)
+{
+	struct client_packet packet;
+	int n;
+	
+/*	printf("Reading from socket %d\n", socket); */
+	n = read(socket, (void *) &packet, sizeof(struct client_packet));
+	
+	/* don't bother, my packets are small and should be read in exactly one try */
+	if (n!= sizeof(struct client_packet))
+	{
+		if (n>0) warn("Wrong packet size on socket %d\n", socket);
+		if (n==0) warn("Peer closed connection on socket %d\n", socket);
+		if (n<0) warn("Error on socket %d : %s\n", socket, strerror(errno));
+		close_connection(socket);
+		return -1;
+	}
+		
+	return process_packet(&packet, socket);
+}
+
+
+/** accept_new_child : One of our children is establishing a data connection with us, accept it
+*/
+void accept_new_child()
+{
+	struct sockaddr_in client_addr;
+	socklen_t client_addr_size;
+	struct hostent * heclient;
+	int socket_client;
+	struct child * son;
+	IP ip;
+
+	memset(&client_addr,0, sizeof(client_addr));
+	client_addr_size = sizeof(client_addr);
+	socket_client = accept(socket_data_server, (struct sockaddr *) &client_addr, &client_addr_size);
+	ip = client_addr.sin_addr;
+	
+	printf("Accepting connection from %s\n", inet_ntoa(ip));
+	
+	if (socket_client >= MAX_CONN)
+	{
+		warn("uh, oh, connection with fd = %d\n", socket_client);
+		close(socket_client);
+		return;
+	}
+	
+	if (nb_children == ARITE_MAX)
+	{
+		warn("Hey, I already have %d children!\n", nb_children);
+		close(socket_client);
+		return;
+	}
+		
+	
+	if (socket_client > fd_max) fd_max = socket_client;
+
+	printf("Welcome son, you are number %d (MAX %d)\n", nb_children, ARITE_MAX);
+	
+	/* FD_SET(socket_client, &sockset); */ /* utile que pour detecter un close(), donc pas utile :)) */
+	son = &children[nb_children++];
+	son->exists = 1;
+	son->fd = socket_client;
+
+	tree_client_got_client(myself, ip);	
+
+}
+
+
+#define BUFFERSIZE 32768
+static char data_buffer[BUFFERSIZE];
+
+unsigned long long totaldata = 0;
+int datapackets = 0;
+
+
+struct timeval start_time;
+struct timeval end_flow_time;
+struct timeval quit_time;
+
+/** send_data : send a chunk of data to all our children (unused (?))
+*/
+void send_data(char * what, int n)
+{
+	int i;
+	
+	for (i=0; i < ARITE_MAX;i++) 
+		if (children[i].exists)
+			write(children[i].fd, what, n);
+}
+
+/** transmit_data : we know there are data available from the external command on the pipe,
+	read them and do smthg with it
+*/
+void transmit_data()
+{
+	int n;
+	int i;
+	
+
+	
+	n = read(pipe_read, data_buffer, BUFFERSIZE);
+	
+	assert(n >= 0);
+	if (n == 0)
+	{
+		printf("End of data flow\n");
+		gettimeofday(&end_flow_time, 0);
+		printf("Dropping children\n");
+		for (i=0; i < ARITE_MAX;i++) 
+			if (children[i].exists)
+				close(children[i].fd);
+		printf("Done\n");				
+		flow_ended = 1;
+		FD_CLR(pipe_read, &sockset);				
+		close(pipe_read);
+		pipe_read = -1;
+		return;
+		
+	}
+	
+	/** send the data to our children */
+	for (i=0; i < ARITE_MAX;i++) 
+		if (children[i].exists)
+			write(children[i].fd, data_buffer, n);
+
+	totaldata += n;
+	if ((datapackets++ & 0xff) == 0) // for each 256 packets, print status
+		printf("Total data sent = %d Megs\n", totaldata >> 20);
+			
+}
+
+/** print_statistics : print misc infos about transfer times and throuput at the end of the data transfer
+*/
+void print_statistics()
+{
+	int usec;
+	float sec;
+	float rate;
+
+	printf("Total data sent = %d Megs, in %d packets\n", (int) (totaldata >> 20), datapackets);	
+	
+	usec = end_flow_time.tv_sec - start_time.tv_sec;
+	usec = (usec * 1000000) + (end_flow_time.tv_usec - start_time.tv_usec);
+	
+	sec = ((float) usec) / 1000000.;
+	rate =  ((float) totaldata) / sec;
+	printf("Transfer time = %.3f seconds, throughput = %.3f Mbytes/second\n", sec, rate/ (1024. * 1024.));
+
+	usec = quit_time.tv_sec - end_flow_time.tv_sec;
+	usec = (usec * 1000000) + (quit_time.tv_usec - end_flow_time.tv_usec);
+	
+	sec = ((float) usec) / 1000000.;
+
+	printf("The pipeline was emptied in %.3f seconds\n", sec);
+}
+
+/** start_external_command : start the external command :
+	open pipes
+	fork
+	close pipes that must be closed
+	exec command
+*/
+	
+void start_external_command()
+{
+	int pip[2];
+	
+
+	printf("Let's go!\n");
+	
+	assert(pipe(pip) >= 0);
+	
+	
+	pipe_read = pip[0];
+	pipe_write = pip[1];
+	
+	
+	fd_max = max(pipe_read, fd_max);
+	fd_max = max(pipe_write, fd_max);
+	
+	if (fork())
+	{
+		// father process
+		close(pipe_write);
+		FD_SET(pipe_read, &sockset);
+		gettimeofday(&start_time, 0);
+	}
+	else
+	{
+		// child process
+		int i;
+		for (i=0; i <= fd_max; i++)
+			if (i!=pipe_write) close(i);
+		
+		assert(dup2(pipe_write, 1) >=0); // duplicate fd to stdout
+		
+		system(ext_command);
+		
+		exit(0);
+	}
+}
+	
+
+/** send_udp_reply : reply to an UDP request we have received
+*/
+void send_udp_reply(IP dest)
+{
+	/* reply by sending the version, can be useful */
+	char * rep = version;
+	printf("Sending UDP reply to %s\n", inet_ntoa(dest));
+	udp_send(dest, UDP_PORT_REPLY, rep, strlen(rep) + 1);	
+	
+}
+
+/** process_udp_packet : see what must be done after we received an UDP request
+*/
+void process_udp_packet(IP source, char * packet, int packet_len)
+{
+	/** avoid buffer overflow */
+	packet[packet_len - 1] = '\0'; 
+
+	if (strlen(session_name) + 1 != packet_len)
+		return;
+
+	if (strncmp(session_name, packet, packet_len))
+		return;
+		
+	printf("Session name matches\n");
+	send_udp_reply(source);
+}
+
+/** main_loop :
+	do always
+		select()
+		read on file descriptors and do what has to be done
+	loop
+*/
+	
+void tcp_tree_main_loop()
+{
+	int i;
+	int select_ret;
+	fd_set fdsr;
+
+	for(;;)
+	{
+		if (!transfer_started) 
+		{
+			if ((clients_wanting_data >= wanted_clients) && (must_start_transfer == waiting_for_clients)) must_start_transfer = must_build_tree;
+			/* must_start_transfer can also be set in process_client_says_go_now() */
+			
+			if ((clients_wanting_data == connected_clients) && (must_start_transfer == building_tree)) must_start_transfer = tree_built;			
+			
+			
+			
+			if (must_start_transfer == must_build_tree) 
+			{
+				build_tree_from_pool();
+				must_start_transfer = building_tree;
+			}
+				
+			
+			if (must_start_transfer == tree_built)
+			{
+				must_start_transfer = tree_in_use;
+				
+				start_external_command();
+				transfer_started = 1;
+				/* we don't accept connections anymore */
+				if (udp_sock != -1)
+				{
+					close(udp_sock); 
+					FD_CLR(udp_sock, &sockset);
+					udp_sock = -1;	
+				}
+				close(socket_server); 
+				FD_CLR(socket_server, &sockset);	socket_server = -1;	
+				close(socket_data_server); 
+				FD_CLR(socket_data_server, &sockset); socket_data_server = -1;
+				
+			}
+		}
+				
+		if ((flow_ended) && (connected_clients == 0))				
+		{
+			gettimeofday(&quit_time, 0);
+			printf("All clients left, I quit\n");
+			print_statistics();
+			return;
+		}
+
+		
+
+/*		printf("Select...\n");*/
+		memcpy((char *) &fdsr, (char *) &sockset, sizeof(fd_set));
+/*		
+		printf("FDSR: ");
+		for (i=0; i <= fd_max; i++)
+			if (FD_ISSET(i, &fdsr))
+				printf(" %d", i);
+				
+		printf("\n");
+	*/	
+		select_ret = select(fd_max + 1, &fdsr, NULL, NULL, NULL);
+		/*printf("HOP !\n");*/
+		
+		if (select_ret < 0)
+		{
+			perror("select");
+			sleep(1);
+			continue;
+		}
+
+		if (udp_sock >= 0)
+		if (FD_ISSET(udp_sock, &fdsr))
+		{
+			char udppacket[UDP_MAX_PACKET_LEN];
+			int n;
+			IP ip;
+			n = receive_udp_packet(udp_sock, udppacket, UDP_MAX_PACKET_LEN, &ip);
+			if (n > 0)
+			{
+				printf("got UDP packet from %s\n",inet_ntoa(ip));				
+				process_udp_packet(ip, udppacket, n);
+			}
+			continue; /* don't mix the server and the other sockets .. */
+		}
+
+
+		if (socket_server >= 0)
+		if (FD_ISSET(socket_server, &fdsr))
+		{
+			accept_new_connection();
+			continue; /* don't mix the server and the other sockets .. */
+		}
+
+		if (socket_data_server >= 0)
+		if (FD_ISSET(socket_data_server, &fdsr))
+		{
+			accept_new_child();
+			draw_tree();			
+			continue; /* don't mix the server and the other sockets .. */
+		}
+		
+		if (pipe_read >= 0)
+		if (FD_ISSET(pipe_read, &fdsr))
+		{
+			transmit_data();
+			continue; /* don't mix the pipe and the other sockets .. */
+		}
+
+			
+		for (i=3; i <= fd_max; i++)
+			if (FD_ISSET(i, &fdsr))
+				read_packet_from_socket(i);
+		
+		/* when the transfer has not begun, I print the tree structure */
+		if (!flow_ended) draw_tree();
+	}
+}
+			
+/** usage : print command line syntax
+*/
+void usage()
+{
+	printf("usage:ka-d-server [ -n nb_clients ] [ -a arity ] [ -s session_name ] [ -e command ] [ -m multicast address ]\n");
+}
+
+/** main :
+	-check command_line
+	-init data structures
+	-open server sockets
+	-enter main loop
+*/
+int main(int argc, char ** argv)
+{
+	int i;
+	
+	
+	char ch;
+	char * optstr = "a:s:n:e:m:";
+
+	
+	printf("Compiled : "__DATE__ " " __TIME__ "\n");
+	
+	printf("ARGS=");
+	for (i=0; i < argc; i++)
+		printf("+%s", argv[i]);
+	printf("+\n");
+	
+	arite = 1;
+	wanted_clients = 1;
+	session_name = 0;
+	
+	
+	while ( -1 != (ch = getopt(argc, argv, optstr)))
+	{
+		switch(ch)
+		{
+			case 'a': /* define arity */
+				arite = atoi(optarg);
+				break;
+			
+			case 'n' : /* number of clients expected */
+				wanted_clients = atoi(optarg);
+				break;
+				
+			case 's' : /* give session name */
+				assert(session_name = strdup(optarg));
+				break;
+				
+			case 'e' : /* give command */
+				assert(ext_command = strdup(optarg));
+				break;
+
+			case 'm' : /* multicast address */
+#ifdef USE_RMTP_LIB			
+				transport_mode = MULTICAST_TRANS;
+				mcast.s_addr=inet_addr(optarg);
+				if (!arite) {
+					printf ("Error : Multicast support and arity are not compatible, you can choose to use the TCP pipe (arity) or multicast\n");
+					exit(1);
+				}else if (session_name) {
+					printf ("Error : Multicast support does not rely on session names\n");
+					exit(1);
+				}				
+#else /*  USE_RMTP_LIB */
+				printf ("Error : this program has been compiled without multicast support\n");
+				exit(1);
+#endif /* ! USE_RMTP_LIB */				
+				break;
+				
+			default:
+				usage();
+				exit(1);
+				break;
+		}
+	}
+		
+		
+
+	if (optind < argc) 
+	{
+		/* there are some arguments left on the command line, error */	
+		usage();
+		exit(1);
+	}
+			
+	
+	get_my_ip(&my_ip);
+	printf("Server IP = %s\n", inet_ntoa(my_ip));
+	printf("command = %s\n", ext_command);
+	
+	
+	printf("I want %d clients\n", wanted_clients);
+	FD_ZERO(&sockset);
+	for (i=0; i < ARITE_MAX;i++) children[i].exists = 0;
+	
+	
+	if (session_name && (transport_mode == TCP_TREE_TRANS))
+	{
+		udp_sock = udp_listen(UDP_PORT_REQUEST);
+		assert(udp_sock >=0);
+		FD_SET(udp_sock, &sockset);
+		fd_max = max(fd_max, udp_sock);
+	}
+	
+	
+	if (transport_mode == TCP_TREE_TRANS) { /* listen for clients only if i'm not using multicast, rmtplib handles clients connection itself */
+		socket_server = listen_port(PORTNUMCOMM);
+		assert(socket_server >=0);
+		FD_SET(socket_server, &sockset);
+		fd_max = max(fd_max, socket_server);
+	
+		socket_data_server = listen_port(PORTNUMDATA);
+		assert(socket_data_server >=0);
+		FD_SET(socket_data_server, &sockset);
+		fd_max = max(fd_max, socket_data_server);
+	}
+	
+	myself = new_client(my_ip, -1);
+	myself->data_connected = 1; /* looks nicer with draw_tree() */
+	
+	for (i=0; i < MAX_CONN; i++)
+	{
+		connections[i].state = no_conn;
+	}
+	
+	/* check we are being executed by root */
+	if (getuid())
+	{
+		printf("\n ****** THIS PROGRAM SHOULD BE EXECUTED BY ROOT TO PREVENT PERMISSIONS ISSUES *****\n\n");
+	}
+
+#ifdef USE_RMTP_LIB
+	if (transport_mode == MULTICAST_TRANS)
+		multicast_main_loop();
+	else
+#endif /* USE_RMTP_LIB */
+		tcp_tree_main_loop();
+
+	return 0;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

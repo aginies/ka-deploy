@@ -1,0 +1,31 @@
+#!/bin/bash
+
+. /ka2/replication.conf
+
+echo "- Looking for default grub menu"
+MENU="$CHROOT/boot/grub/menu.lst"
+
+if [ ! -f $MENU ]; then
+	echo " no $MENU file, switching to lilo"
+	$KADIR/make_initrd_lilo
+	exit
+fi
+
+DEFAULTNB=`grep default $MENU | cut -d " " -f 2`
+((DEFAULTNB++))
+DTITLE=`grep title $MENU | head -${DEFAULTNB} | tail -1 |  sed -e 's/title //' | sed -e 's/ /_/'`
+ENTRY=`grep $DTITLE $MENU`
+KERNELV=`for i in $DATA; do echo $i ; done | grep vmlinuz | cut -d "-" -f 2-`
+if [ -z $KERNELV ]; then
+	KERNELV=`ls -1 $CHROOT/lib/modules/ | tail -1 | sed -e "s|/||g"`
+	echo "- erase old initrd.img link"
+	rm -vf $CHROOT/boot/initrd.img
+fi
+INITRD="/boot/initrd-$KERNELV.img"
+
+echo " initrd will be : $INITRD"
+
+echo " running: chroot $CHROOT /sbin/mkinitrd -v -f $1 $INITRD $KERNELV"
+chroot $CHROOT /sbin/mkinitrd -v -f $1 $INITRD $KERNELV
+chroot $CHROOT ln -sf /boot/initrd-$KERNELV.img /boot/initrd.img
+chroot $CHROOT /sbin/grub-install $FIRSTDRIVE

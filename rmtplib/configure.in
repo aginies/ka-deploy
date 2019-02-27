@@ -1,0 +1,49 @@
+/*
+ * $Revision: 1.1 $
+ * $Author: mikmak $
+ * $Date: 2001/06/29 12:04:58 $
+ * $Header: /cvsroot/ka-tools/ka-deploy/rmtplib/configure.in,v 1.1 2001/06/29 12:04:58 mikmak Exp $
+ * $Id: configure.in,v 1.1 2001/06/29 12:04:58 mikmak Exp $
+ * $Log: configure.in,v $
+ * Revision 1.1  2001/06/29 12:04:58  mikmak
+ * added
+ *
+ * $State: Exp $
+ */
+
+dnl Process this file with autoconf to produce a configure script.
+AC_INIT(RMTPlib.h)
+
+#AM_INIT_AUTOMAKE(libRMTP,0.1.1)
+
+dnl Checks for programs.
+AC_PROG_CXX
+AC_PROG_INSTALL
+AM_PROG_LIBTOOL
+
+PACKAGE=libRMTP
+#LIBRMTP_VERSION=0.1.1
+#LIBRMTP_VERSION_INFO=1:1:1
+
+AC_SUBST(LIBRMTP_VERSION)
+#AC_SUBST(LIBRMTP_VERSION_INFO)
+VERSION=$LIBRMTP_VERSION
+
+dnl Checks for libraries.
+
+dnl Checks for header files.
+
+dnl Checks for typedefs, structures, and compiler characteristics.
+
+dnl Checks for library functions.
+AC_HEADER_STDC
+AC_CHECK_FUNCS(socket)
+#AC_CHECK_SIZEOF(long,4)
+AC_SUBST(LIBTOOL_DEPS)
+AC_SUBST(OPT)
+AC_SUBST(LIBS)
+AC_SUBST(DEBUG)
+AC_SUBST(CFLAGS)
+AC_SUBST(PROFILE)
+
+AC_OUTPUT(Makefile)

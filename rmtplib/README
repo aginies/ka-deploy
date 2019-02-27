@@ -1,0 +1,45 @@
+/*
+ * $Revision: 1.1 $
+ * $Author: mikmak $
+ * $Date: 2001/06/29 12:04:58 $
+ * $Header: /cvsroot/ka-tools/ka-deploy/rmtplib/README,v 1.1 2001/06/29 12:04:58 mikmak Exp $
+ * $Id: README,v 1.1 2001/06/29 12:04:58 mikmak Exp $
+ * $Log: README,v $
+ * Revision 1.1  2001/06/29 12:04:58  mikmak
+ * added
+ *
+ * $State: Exp $
+ */
+
+
+What is it ?
+**********************
+RMTP means Reliable Multicast Transport Protocol, it is a simple reliable multicast protocol but it does not implement all the functionnalities describes in IETF works. It is a mix of ACK / NACK and TRACK architecture. RMTP should be adapted to fast (and quite fast) networks (10Mb/s, 100Mb/s and over...).
+Its first goal is to be used with the Ka-tools (cluster management) to deploy OS and commands over clusters (and grid of clusters).
+
+Functionment :
+**********************
+Three modes are possible for a node : server, client or relay (users can only use server and client, relay is internal).
+The server starts first then wait for clients to connect. Each client signals itself on the multicast group and look for its master (the main server) (packet type GET_MASTER). The server then answer to the client by giving hom its status (CLIENT_NORMAL or CLIENT_RELAY). A relay is a special node which will have children and fully handle them (in terms of getting their ACKs, and retransmitting lost datas to them).
+This leads to build a tree : the server will have up to MAX_CLIENTS_LEVEL clients and up to MAX_RELAYS_LEVEL relays per level in the tree. Up to some hundreds machines it is not necessary to use a tree, setting MAX_RELAYS_LEVEL to 0 would then be a good idea to get better performances (and MAX_CLIENTS_LEVEL to MAX_CLIENTS). Each relay (and server) will handle the ACKs and RETRANSMIT packets of its legacy clients (including relays which are clients but not the relays' clients). This should limit the impact of the size of the network. Nevertheless, tree architecture is not as performant as expected for instance and should be used for high number of clients only ! (this simply means, first tests with one single server and see ;p)
+
+Installation :
+**********************
+It's easy, juste have a look to RMTPlib.h and modify the first part to suit your network's configuration (most important to check is PACKET_SIZE since using too big packets will highly decrease performances, do not use IP fragmentation over multicast. Most of parameters are available at runtime through the setParam() function. (Note that my packet header is 20 + the udp header which is 8).
+To install a simple : ./configure && make && make install is enough. Make sure your /usr/local/lib is in your /etc/ld.so.conf or in LD_LIBRARY_PATH at runtime. The header to use is RMTPlib.h it contains all the definitions required.
+
+How to use it :
+**********************
+The library provides a RMTPServer class and a RMTPClient class, this is what you need to implement it in your program.
+To run the server : create an implementation of the class by giving it the multicast adress as parameter, use the different setParam() you need if required (this step is optionnal), then choose between : startTransfer() which will start the transfer immediately if you do not give the expected number of clients otherwise it will wait for clients before sending. startTransfer() is a non-blocking call and should return immediately. To send buffers i provide the RMTPsend() and RMTPrecv() functions (blocking call). The description of all functions is in RMTPlib.h
+
+Environments:
+**********************
+Only tested on Linux 2.2 and 2.4 for now.
+Mail me any other environments you tried :)
+
+Hardware :
+A 225 PCs cluster connected at 100Mbits/s with 5 switchs 1Gbits/s give a 3Mbytes/s for up to 45 clients and 2Mbytes/s for more. This is tunable using the WINDOW_SIZE and ACK_INTERVAL params.
+
+
+Bug reports, ideas and comments are always welcome and wished : mickael.marchand@imag.fr or mikmak@users.sourceforge.net

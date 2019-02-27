@@ -1,0 +1,32 @@
+
+-a billion steps are required to get the whole thing fully working : set up dhcpd, tftpd, mini system image, bpbatch + scripts...
+
+about the source code:
+-there is absolutely no security.
+-there is not much error checking. And if one machine fails, all the machines fail.
+
+	*** this is not true anymore. well, if you use a chain (arity = 1), the chain will fix itself
+	if one machine fails. This will even be detected in 20 seconds or so. BUT this does not work
+	for trees (yet).
+		
+-the code is not modular enough : few bits of code are present both in the server and the client.
+-the network protocol between the client and the server may sound terrible. I only wanted it to work. It does :)
+
+-there should REALLY be some cleanups around the struct child BOTH for the server and the client
+(add a ->exists field or something)
+
+-the flushing of the buffers (at the end of the data flow) should occur in the main select() loop
+--> more efficient
+--> recovery ok
+
+
+** If you keep an eye on the client during the file transfer, and if you use the same command line than I, you will get this warning message :
+
+tar : could not create directory : no such file or directory
+
+It seems that the reason of this message is that since tar will remove all the leading '/' from the filenames, 
+when it does so with the root directory, '/' becomes the empty string, and hence tar fails to create it.
+This bug has no consequence on the installation, it is only a 'cosmetic' bug :)
+
+
+

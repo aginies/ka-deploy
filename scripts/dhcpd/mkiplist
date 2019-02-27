@@ -1,0 +1,5 @@
+#! /bin/bash
+# create a list of consecutive ip's
+# mkiplist pattern first last
+# ex : mkiplist 125.45.76. 34 70
+seq $2 $3 | sed "s/^\(.*\)$/$1\1"/

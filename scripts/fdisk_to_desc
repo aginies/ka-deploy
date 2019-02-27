@@ -1,0 +1,73 @@
+#!/usr/bin/perl -w
+
+use strict;
+my $DESC = "/tmp/desc";
+
+############# ie desc file:
+##hda1 = linux root
+#linux 5000
+##hda2 = swap
+#swap 300
+##hda3 = extended
+#extended fill
+##hda5 and 6 = linux
+#logical linux 500
+#logical linux fill
+
+# from MDK::Common::File
+sub append_to_file { 
+  my $f = shift; open(my $F, ">>$f") or die "output in file $f failed: $!\n"; print $F $_ foreach @_; 1 
+}
+
+sub test_fdsik_bc() {
+    map { if (! -e $_) { 
+	print "$_ not installed !\n"; 
+	exit 1; }
+    } qw(/sbin/fdisk /usr/bin/bc);
+}
+
+sub creation_desc() {
+    my @cmd = `/sbin/fdisk -l`;
+    my $e;
+    system("rm -rf $DESC");
+    foreach (@cmd) {
+#	                                              /dev/hda2       *     1913    3186   10233405  83        Linux
+	my ($dev, undef, undef, undef, $size, undef, $fs, $all) = /^\/dev\/(.*?)\s+(\*|)\s+(\d+)\s+(\d+)\s+(\d+|\d+\+)\s+(\d+|.*?)\s+(\w+)\s(.*)/g;
+	$dev and print " -devices: $dev";
+	my $sizemo;
+	if ($size) {
+	    if ($size =~ m/\+/) { substr($size, -1) = "" }
+	    $sizemo = `echo '($size/1024)' |bc -l`;
+	    my @st = split(/\./, $sizemo);
+	    $sizemo = $st[0];
+	    $sizemo and print " -size en Mo: $sizemo";
+	}
+	$fs and print " -filesystem: $fs\n";
+
+	# create desc file
+	if ($fs) {
+	    if ($all =~ /swap/) {
+		append_to_file($DESC, "${e}swap $sizemo\n");
+	    } elsif ($fs =~ /Extended/) {
+		append_to_file($DESC, "extended $sizemo\n");
+		$e = "logical ";
+	    } elsif ($fs =~ /Linux/) {
+		append_to_file($DESC, "${e}linux $sizemo\n");
+	    } else {
+		print "
+---------------------------------------------
+dont know what todo with $fs
+desc file maybe corrupted (missing partition)
+---------------------------------------------
+";
+	 
+	    }
+	}
+    }
+}
+
+###########
+# MAIN
+test_fdsik_bc();
+creation_desc();
+print "Desc file is $DESC\n";

@@ -1,0 +1,96 @@
+This file contains any messages produced by compilers while
+running configure, to aid debugging if configure makes a mistake.
+
+configure:703: checking for c++
+configure:735: checking whether the C++ compiler (c++  ) works
+configure:751: c++ -o conftest    conftest.C  1>&5
+configure:777: checking whether the C++ compiler (c++  ) is a cross-compiler
+configure:782: checking whether we are using GNU C++
+configure:791: c++ -E conftest.C
+configure:810: checking whether c++ accepts -g
+configure:872: checking for a BSD compatible install
+configure:925: checking for Cygwin environment
+configure:941: cc -c   conftest.c 1>&5
+configure: In function `main':
+configure:937: `__CYGWIN32__' undeclared (first use in this function)
+configure:937: (Each undeclared identifier is reported only once
+configure:937: for each function it appears in.)
+configure: failed program was:
+#line 930 "configure"
+#include "confdefs.h"
+
+int main() {
+
+#ifndef __CYGWIN__
+#define __CYGWIN__ __CYGWIN32__
+#endif
+return __CYGWIN__;
+; return 0; }
+configure:958: checking for mingw32 environment
+configure:970: cc -c   conftest.c 1>&5
+configure: In function `main':
+configure:966: `__MINGW32__' undeclared (first use in this function)
+configure:966: (Each undeclared identifier is reported only once
+configure:966: for each function it appears in.)
+configure: failed program was:
+#line 963 "configure"
+#include "confdefs.h"
+
+int main() {
+return __MINGW32__;
+; return 0; }
+configure:987: checking how to run the C preprocessor
+configure:1008: cc -E  conftest.c >/dev/null 2>conftest.out
+configure:1142: checking host system type
+configure:1163: checking build system type
+configure:1183: checking for gcc
+configure:1296: checking whether the C compiler (gcc  ) works
+configure:1312: gcc -o conftest    conftest.c  1>&5
+configure:1338: checking whether the C compiler (gcc  ) is a cross-compiler
+configure:1343: checking whether we are using GNU C
+configure:1352: gcc -E conftest.c
+configure:1371: checking whether gcc accepts -g
+configure:1414: checking for ld used by GCC
+configure:1482: checking if the linker (/usr/bin/ld) is GNU ld
+GNU ld version 2.9.5 (with BFD 2.9.5.0.31)
+configure:1499: checking for /usr/bin/ld option to reload object files
+configure:1511: checking for BSD-compatible nm
+configure:1549: checking whether ln -s works
+configure:1570: checking how to recognise dependant libraries
+configure:1743: checking for object suffix
+configure:1749: gcc -c -g -O2  conftest.c 1>&5
+configure:1769: checking for executable suffix
+configure:1779: gcc -o conftest -g -O2   conftest.c  1>&5
+configure:1810: checking command to parse /usr/bin/nm -B output
+configure:1886: gcc -c -g -O2  conftest.c 1>&5
+configure:1889: /usr/bin/nm -B conftest.o | sed -n -e 's/^.*[ ]\([ABCDGISTW][ABCDGISTW]*\)[ ][ ]*\(\)\([_A-Za-z][_A-Za-z0-9]*\)$/\1 \2\3 \3/p' > conftest.nm
+configure:1940: gcc -o conftest -g -O2   conftest.c conftstm.o 1>&5
+configure:1986: checking for dlfcn.h
+configure:1996: cc -E  conftest.c >/dev/null 2>conftest.out
+configure:2164: checking for ranlib
+configure:2231: checking for strip
+configure:2467: checking for objdir
+configure:2494: checking for gcc option to produce PIC
+configure:2646: checking if gcc PIC flag -fPIC works
+configure:2660: gcc -c -g -O2 -fPIC -DPIC  conftest.c 1>&5
+configure:2712: checking if gcc static flag -static works
+configure:2727: gcc -o conftest -g -O2   -static conftest.c  1>&5
+configure:2754: checking if gcc supports -c -o file.o
+configure:2773: gcc -c -g -O2 -o out/conftest2.o  conftest.c 1>&5
+configure:2802: checking if gcc supports -c -o file.lo
+configure:2818: gcc -c -g -O2 -c -o conftest.lo  conftest.c 1>&5
+configure:2867: checking if gcc supports -fno-rtti -fno-exceptions
+configure:2880: gcc -c -g -O2 -fno-rtti -fno-exceptions -c conftest.c  conftest.c 1>&5
+configure:2907: checking whether the linker (/usr/bin/ld) supports shared libraries
+configure:3523: checking how to hardcode library paths into programs
+configure:3551: checking whether stripping libraries is possible
+configure:3565: checking dynamic linker characteristics
+configure:3951: checking if libtool supports shared libraries
+configure:4444: checking whether -lc should be explicitly linked in
+configure:4451: gcc -c -g -O2  conftest.c 1>&5
+configure:4464: gcc -shared conftest.o  -v -Wl,-soname -Wl,conftest -o conftest 2>&1 | grep  -lc  >/dev/null 2>&1
+configure:5054: checking for ANSI C header files
+configure:5067: cc -E  conftest.c >/dev/null 2>conftest.out
+configure:5134: gcc -o conftest -g -O2   conftest.c  1>&5
+configure:5160: checking for socket
+configure:5188: gcc -o conftest -g -O2   conftest.c  1>&5

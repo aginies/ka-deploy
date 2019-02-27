@@ -1,0 +1,8 @@
+Ka-deploy is a tool designed to duplicate a machine running Linux on many machines at the same time, 
+typically for installing a beowulf style cluster.
+This software should be considered as alpha, but it works well on our hardware/network.
+Read the files in the doc subdirectory, the INSTALL file, and rmtplib/README for more information.
+
+If you have questions, email me : simon.derr@imag.fr
+
+-- AND you really should read the BUGS file --

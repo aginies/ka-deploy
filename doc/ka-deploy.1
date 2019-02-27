@@ -1,0 +1,130 @@
+.\" Copyright (c) 1991 The Regents of the University of California.
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\" 3. All advertising materials mentioning features or use of this software
+.\"    must display the following acknowledgement:
+.\"	This product includes software developed by the University of
+.\"	California, Berkeley and its contributors.
+.\" 4. Neither the name of the University nor the names of its contributors
+.\"    may be used to endorse or promote products derived from this software
+.\"    without specific prior written permission.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.TH KA-DEPLOY 1  "17 December 2001" "Ka Tools Manual"
+.SH NAME
+ka-deploy, ka-d-server, ka-d-client \- send large amounts of data to several machines
+.SH SYNOPSIS
+.B ka-d-server
+.B \-n 
+.I NUMBER
+.RB [ \-l ]
+.RB [ \-s
+.IR SESSION ]
+.RB [ \-d 
+.IR DELAY ]
+.RB [ \-e
+.IR COMMAND ]
+.br
+.B ka-d-client
+.RB [ \-s
+.IR SESSION 
+|
+.B \-h
+.IR HOSTNAME ]
+.RB [ \-e
+.IR COMMAND ]
+.RB [ \-g ]
+.br
+
+.SH DESCRIPTION
+.B Ka-deploy
+is a tool designed to send large amounts of data from one to many machines using TCP trees,
+typically a regular chain.
+The typical usage for ka-deploy is partition cloning.
+.PP
+The machine you want to send the data from must be running
+.B ka-d-server
+and the machines you want to send the data to must run
+.BR ka-d-client .
+.PP
+The server 
+.B ka-d-server 
+will listen on a TCP port and wait for a given number of machines (
+.BR ka-d-client ) 
+to connect to him.
+Then the server will coordinate the clients in the creation of a TCP tree or chain. Once ready,
+the server will run its command and pipe its standard output into the tree. The clients will read
+data from the tree and pipe them into the standard input of their command.
+
+
+.SH FINDING THE SERVER
+When
+.B ka-d-client
+is run, it must contact a 
+.B ka-d-server
+program. There are two ways of telling the client how to find the server. The 
+.B \-h
+option can be used to give the server hostname to the client. Another way is to use sessions:
+give a same 
+.B \-s
+option to both the server and the client, and the client will send UDP broadcast packets to locate the server.
+Of course this works only if the client and server are within the same subnet.
+A session name is merely a short string, such as "foobar" or "helloworld".
+
+.SH NUMBER OF CLIENTS
+The server must be given a 
+.B \-n
+option with the number of clients to wait before the building of the tree/chain occurs.
+If for some reason (node failure for instance) at some moment you don't want to wait for all the clients,
+you can force the server to exit the 'wait mode'. To do this, just run a 
+.BR ka-d-client
+with the 
+.BR \-g
+option. This client will contact the server, tell him to stop waiting, and will
+.IR exit .
+.SH SERVER OPTIONS
+.TP
+.BI \-l
+Be sure the server data buffer always has enough data for recovery if a node fails. 
+For this, the last node of the chain will report from time to time its position in the data flow to the server.
+I'm not too sure but this can lead to a severe performance drop with many nodes (200+).
+.TP
+.BI \-a " NUM"
+Specify the 'arity' of the tree, the number of nodes under each node in the tree.
+The default is 1, and the result is a chain, instead of a tree.
+.TP
+.BI \-d " NUM"
+Normally the server will send an 'exit signal' to the clients when they have
+all received the data. If this option is enabled, the server will introduce a
+delay between the release of the clients. This delay is the given number in
+tenths of second. Note that you MUST use the 
+.B \-w 
+option on the clients for this
+to work. We use this option to smooth the load on our TFTP servers
+for whole-cluster system installations.
+.SH CLIENT OPTIONS
+.TP
+.B \-w
+If this option is used, then the client will wait for an 'exit signal' from
+the server before exiting. This option can be used to synchronize a bit the clients before they exit. See the 
+.B \-d
+option on the server.
